@@ -5,8 +5,8 @@ Uses pymobiledevice3 over USB to identify the phone, then browses Wi-Fi lockdown
 (mobdev2) for the matching device's IPv4.
 
 If Wi-Fi lockdown (EnableWifiConnections) is off, turns it on over USB and
-retries Bonjour. If Bonjour is still empty, tries `profile set-wifi-power
---state on` (radio; often fails on unsupervised phones) and retries again.
+retries Bonjour. If Bonjour is still empty, tries MCInstall SetWiFiPowerState
+(Wi-Fi radio on) over USB — often fails on unsupervised phones — and retries.
 
 Stdout (success): JSON {"ok": true, "ip": "10.0.100.10", ...}
 Exit:
@@ -18,7 +18,9 @@ Exit:
 
 from __future__ import annotations
 
+import asyncio
 import json
+import re
 import subprocess
 import sys
 import time
@@ -148,15 +150,61 @@ def _set_wifi_lockdown(on: bool) -> tuple[bool, str]:
     return False, (err or out or err2 or out2 or f"exit {code}").strip()
 
 
-def _set_wifi_power_on() -> tuple[bool, str]:
-    # CLI default for --state is off — always pass on explicitly.
-    code, out, err = _run_pymd(
-        ["profile", "set-wifi-power", "--state", "on"],
-        timeout=25.0,
-    )
-    if code == 0:
+_ERR_LOC_RE = re.compile(r"'LocalizedDescription':\s*'([^']+)'")
+_ERR_CODE_RE = re.compile(r"'ErrorCode':\s*(\d+)")
+_ERR_DOMAIN_RE = re.compile(r"'ErrorDomain':\s*'([^']+)'")
+
+
+def _short_wifi_power_error(exc: BaseException) -> str:
+    """One-line reason; never dump a traceback or MCInstall binary archive."""
+    if isinstance(exc, asyncio.TimeoutError):
+        return "timeout"
+    raw = str(exc).replace("\n", " ").strip()
+    loc = _ERR_LOC_RE.search(raw)
+    code = _ERR_CODE_RE.search(raw)
+    domain = _ERR_DOMAIN_RE.search(raw)
+    bits: list[str] = []
+    if loc:
+        bits.append(loc.group(1).rstrip("."))
+    if code:
+        bits.append(f"ErrorCode {code.group(1)}")
+    if domain:
+        bits.append(domain.group(1))
+    if bits:
+        return "; ".join(bits)
+    name = type(exc).__name__
+    compact = re.sub(r"b['\"].{12,}['\"]", "(binary)", raw)
+    compact = re.sub(r"\s+", " ", compact).strip()
+    if len(compact) > 180:
+        compact = compact[:177] + "..."
+    return f"{name}: {compact}" if compact else name
+
+
+def _set_wifi_power_on(udid: str = "") -> tuple[bool, str]:
+    """Turn Wi-Fi radio on via MCInstall (same as profile set-wifi-power --state on).
+
+    In-process so typer/CLI tracebacks never become the user-facing error.
+    Always requests power *on* (CLI default is off).
+    """
+    try:
+        from pymobiledevice3.lockdown import create_using_usbmux
+        from pymobiledevice3.services.mobile_config import MobileConfigService
+    except ImportError as exc:
+        return False, f"pymobiledevice3 missing: {exc}"
+
+    async def _run() -> None:
+        async with await create_using_usbmux(
+            serial=udid or None,
+            connection_type="USB",
+        ) as lockdown:
+            async with MobileConfigService(lockdown=lockdown) as mc:
+                await mc.set_wifi_power_state(True)
+
+    try:
+        asyncio.run(asyncio.wait_for(_run(), timeout=25.0))
         return True, ""
-    return False, (err or out or f"exit {code}").strip()
+    except Exception as exc:
+        return False, _short_wifi_power_error(exc)
 
 
 def _ensure_wifi_lockdown_on() -> bool:
@@ -224,14 +272,14 @@ def main() -> int:
 
     if chosen is None:
         print(
-            "Bonjour still empty; trying Wi-Fi radio on over USB (profile set-wifi-power --state on)...",
+            "Bonjour still empty; trying Wi-Fi radio on over USB (SetWiFiPowerState)...",
             file=sys.stderr,
         )
-        ok, err = _set_wifi_power_on()
+        ok, err = _set_wifi_power_on(phone.get("udid") or "")
         if not ok:
             print(
                 "WIFI_POWER_ON_FAILED (often needs supervised/MDM; turn Wi-Fi on in Control Center): "
-                f"{err[:300]}",
+                f"{err[:200]}",
                 file=sys.stderr,
             )
         else:
