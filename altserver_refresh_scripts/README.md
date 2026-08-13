@@ -24,6 +24,6 @@ Direct run waits for **Enter**. Child callers: `-NoWaitEnter`.
 
 Exit codes: **0** same subnet, **2** no USB iPhone, **4** USB but no advertised Wi-Fi IPv4, **1** other failure.
 
-Requires: PowerShell 7, Python 3.12 + `pymobiledevice3`, USB-trusted unlocked iPhone, Wi-Fi lockdown enabled (`pymobiledevice3 lockdown wifi-connections on`).
+Requires: PowerShell 7, Python 3.12 + `pymobiledevice3`, USB-trusted unlocked iPhone. `Get-IphoneLanIpv4.py` turns on Wi-Fi lockdown over USB when it is off (`lockdown wifi-connections --state on`). If Bonjour is still empty, it tries `profile set-wifi-power --state on` (radio; often fails unless supervised) and retries. It does not join an SSID for you.
 
 Loop Segments companion/rclone still call `windows\lan\Invoke-LoopSegmentsPhoneLanRecoverIfNeeded.ps1`. That wrapper **runs this script first**. If the phone is already on a PC/AltServer subnet, it still waits for `:8765` and does **not** reboot routers just because Loop Segments is down. If USB/Bonjour cannot give a phone IP (exit 2 or 4), it falls back to LAN-page wait + off-subnet router reboots.

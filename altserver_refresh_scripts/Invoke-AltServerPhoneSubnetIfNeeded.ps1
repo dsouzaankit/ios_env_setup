@@ -301,7 +301,7 @@ try {
         Exit-WithEnter 2
     }
     if ($probe.ExitCode -eq 4 -and -not $probe.Ip) {
-        Write-Host '[altserver-subnet] USB iPhone present but Bonjour advertised no Wi-Fi IPv4 (enable Wi-Fi lockdown / join Wi-Fi).' -ForegroundColor Yellow
+        Write-Host '[altserver-subnet] USB iPhone present but no Wi-Fi IPv4 (radio off / not associated? turn Wi-Fi on).' -ForegroundColor Yellow
         Exit-WithEnter 4
     }
 

@@ -6,17 +6,18 @@ Shared Windows helpers for iOS sideloading / AltServer / phone LAN. Used as a Gi
 
 | Path | Role |
 |------|------|
-| `altserver_refresh_script/` | Locate/start AltServer; put the iPhone on the same LAN subnet as this PC |
-| `setup-ios-webview-debug.ps1` / `start-ios-webview-debug.ps1` | WKWebView inspector helpers (kit is local, not in this repo) |
-| `app_refresh_script/` | Placeholder |
+| `altserver_refresh_scripts/` | Locate/start AltServer; put the iPhone on the same LAN subnet as this PC |
+| `setup-ios-webview-debug.ps1` / `start-ios-webview-debug.ps1` | WKWebView inspector helpers (kit is local under `ign/`, not in this repo) |
 
 Apple iCloud/iTunes installers and `altinstaller/` stay on the machine only (gitignored).
+
+Clone into Loop Segments as submodule **`env_setup/`** (`git clone --recurse-submodules` / `git submodule update --init`). A sibling checkout at `P:\all_scripts\iOS apps\env_setup` is the fallback if the submodule is missing.
 
 ## AltServer
 
 ```powershell
-pwsh -File .\altserver_refresh_script\Invoke-AltServerIfNeeded.ps1
-pwsh -File .\altserver_refresh_script\Invoke-AltServerPhoneSubnetIfNeeded.ps1
+pwsh -File .\altserver_refresh_scripts\Invoke-AltServerIfNeeded.ps1
+pwsh -File .\altserver_refresh_scripts\Invoke-AltServerPhoneSubnetIfNeeded.ps1
 ```
 
-Direct runs wait for Enter. Child callers: `-NoWaitEnter`. See `altserver_refresh_script/README.md`.
+Direct runs wait for Enter. Child callers: `-NoWaitEnter`. See `altserver_refresh_scripts/README.md`.
