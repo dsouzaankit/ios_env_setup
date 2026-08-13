@@ -1,0 +1,12 @@
+# Local Apple / AltServer installers — do not publish
+iCloudSetup.exe
+iTunes64Setup.exe
+altinstaller/
+
+# Nested third-party kit with its own .git + generated WebKit
+ign/
+
+# Python
+**/__pycache__/
+*.pyc
+.venv/
