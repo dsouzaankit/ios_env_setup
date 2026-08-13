@@ -6,7 +6,7 @@ Shared Windows helpers for iOS sideloading / AltServer / phone LAN. Used as a Gi
 
 | Path | Role |
 |------|------|
-| `altserver_refresh_scripts/` | Locate/start AltServer; put the iPhone on the same LAN subnet as this PC |
+| `altserver_refresh_scripts/` | Locate/start AltServer; phone Wi-Fi IPv4 via USB + Bonjour + USB pcapd; reboot the phone’s AP if it is off the PC/AltServer subnet |
 | `setup-ios-webview-debug.ps1` / `start-ios-webview-debug.ps1` | WKWebView inspector helpers (kit is local under `ign/`, not in this repo) |
 
 Apple iCloud/iTunes installers and `altinstaller/` stay on the machine only (gitignored).
