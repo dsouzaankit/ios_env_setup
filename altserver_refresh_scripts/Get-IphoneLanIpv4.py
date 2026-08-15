@@ -1,21 +1,17 @@
 #!/usr/bin/env python3
 """Print the USB-connected iPhone's current LAN IPv4.
 
-Uses pymobiledevice3 over USB to identify the phone, then browses Wi-Fi lockdown
-(mobdev2 / Bonjour) for the matching device's IPv4. Bonjour is mDNS / link-local:
-it only works when the phone and this PC share a subnet.
+Uses pymobiledevice3 over USB to identify the phone, then USB
+``com.apple.pcapd`` on en0 (~8s) to read IPv4 from Wi-Fi packet headers.
+Works across subnets; no admin tunneld. Does not use Bonjour/mobdev2
+(mDNS is often empty on the same subnet — Clash TUN, leftover WFP, IPv6-only
+ads). Does not call SetWiFiPowerState.
 
-If Bonjour is empty, falls back to USB ``com.apple.pcapd`` (no admin tunneld)
-and reads IPv4 from Wi-Fi (en0) packet headers — works across subnets.
-
-If Wi-Fi lockdown (EnableWifiConnections) is off, turns it on over USB and
-retries Bonjour before the USB fallback. Does not call SetWiFiPowerState.
-
-Stdout (success): JSON {"ok": true, "ip": "10.0.100.10", "source": "...", ...}
+Stdout (success): JSON {"ok": true, "ip": "10.0.100.10", "source": "usb-pcapd", ...}
 Exit:
   0  got IPv4
   2  no USB iPhone
-  4  USB present but no Wi-Fi IPv4 from Bonjour or USB fallback
+  4  USB present but no Wi-Fi IPv4 from pcapd
   1  other error
 """
 
@@ -26,7 +22,6 @@ import ipaddress
 import json
 import subprocess
 import sys
-import time
 from collections import Counter
 from typing import Any
 
@@ -89,107 +84,24 @@ def _usb_phones(entries: Any) -> list[dict[str, str]]:
     return out
 
 
-def _wifi_records(entries: Any) -> list[dict[str, str]]:
-    if not isinstance(entries, list):
-        return []
-    out: list[dict[str, str]] = []
-    for item in entries:
-        if not isinstance(item, dict):
-            continue
-        ip = str(item.get("ip") or item.get("Identifier") or "").strip()
-        if not ip or ":" in ip:
-            continue  # skip empty / IPv6
-        parts = ip.split(".")
-        if len(parts) != 4 or not all(p.isdigit() for p in parts):
-            continue
-        out.append(
-            {
-                "ip": ip,
-                "name": str(item.get("DeviceName") or "").strip(),
-                "product": str(item.get("ProductType") or "").strip(),
-            }
-        )
-    return out
-
-
-def _names_match(a: str, b: str) -> bool:
-    if not a or not b:
-        return False
-    return a.casefold() == b.casefold()
-
-
 def _log(msg: str) -> None:
     print(msg, file=sys.stderr, flush=True)
 
 
-def _browse_mobdev2(browse_timeout: float = 3.0) -> tuple[list[dict[str, str]], str]:
-    _log(f"Bonjour mobdev2 ({int(browse_timeout)}s)...")
-    code, out, err = _run_pymd(
-        ["bonjour", "mobdev2", "--timeout", str(int(browse_timeout))],
-        timeout=browse_timeout + 5.0,
-    )
-    records = _wifi_records(_parse_json_payload(out)) if code == 0 else []
-    return records, (err or out or "").strip()
+def _is_network_or_broadcast(ip: str) -> bool:
+    parts = ip.split(".")
+    if len(parts) != 4 or not all(p.isdigit() for p in parts):
+        return True
+    last = int(parts[3])
+    return last in (0, 255)
 
 
-def _wifi_lockdown_enabled() -> bool | None:
-    code, out, err = _run_pymd(["lockdown", "wifi-connections"], timeout=8.0)
-    payload = _parse_json_payload(out)
-    if isinstance(payload, dict) and "EnableWifiConnections" in payload:
-        return bool(payload["EnableWifiConnections"])
-    combined = f"{out}\n{err}"
-    if "true" in combined.lower() and "enablewificonnections" in combined.lower():
-        return "true" in combined.lower().split("enablewificonnections", 1)[-1][:40]
-    if code != 0:
-        return None
-    return None
-
-
-def _set_wifi_lockdown(on: bool) -> tuple[bool, str]:
-    state = "on" if on else "off"
-    code, out, err = _run_pymd(
-        ["lockdown", "wifi-connections", "--state", state],
-        timeout=8.0,
-    )
-    if code == 0:
-        return True, ""
-    code2, out2, err2 = _run_pymd(["lockdown", "wifi-connections", state], timeout=8.0)
-    if code2 == 0:
-        return True, ""
-    return False, (err or out or err2 or out2 or f"exit {code}").strip()
-
-
-def _ensure_wifi_lockdown_on() -> bool:
-    """Return True if we just turned lockdown on."""
-    enabled = _wifi_lockdown_enabled()
-    if enabled is True:
-        _log("Wi-Fi lockdown already on.")
+def _is_likely_router_ip(ip: str) -> bool:
+    """Default-gateway-shaped addresses (.1 / .254) are usually the AP, not the phone."""
+    parts = ip.split(".")
+    if len(parts) != 4 or not all(p.isdigit() for p in parts):
         return False
-    if enabled is False:
-        _log(
-            "Wi-Fi lockdown is off; enabling over USB (lockdown wifi-connections --state on)..."
-        )
-    else:
-        _log("Could not read Wi-Fi lockdown state; trying enable anyway...")
-    ok, err = _set_wifi_lockdown(True)
-    if not ok:
-        print(f"WIFI_LOCKDOWN_ENABLE_FAILED: {err[:300]}", file=sys.stderr, flush=True)
-        return False
-    time.sleep(1)
-    return True
-
-
-def _pick_record(
-    phone: dict[str, str], records: list[dict[str, str]]
-) -> dict[str, str] | None:
-    for rec in records:
-        if _names_match(rec["name"], phone["name"]) or (
-            rec["product"] and rec["product"] == phone["product"]
-        ):
-            return rec
-    if len(records) == 1:
-        return records[0]
-    return None
+    return int(parts[3]) in (1, 254)
 
 
 def _is_lan_unicast(ip: str) -> bool:
@@ -204,6 +116,7 @@ def _is_lan_unicast(ip: str) -> bool:
         and not addr.is_multicast
         and not addr.is_reserved
         and ip != "0.0.0.0"
+        and not _is_network_or_broadcast(ip)
     )
 
 
@@ -307,10 +220,17 @@ def _hints_from_frame(data: bytes) -> list[tuple[str, str, bytes | None]]:
 
 
 def _pick_phone_ip(src_private: Counter[str], src_to_public: Counter[str], dst_private: Counter[str]) -> str | None:
+    def _hosts(counter: Counter[str]) -> list[str]:
+        return [ip for ip in counter if not _is_likely_router_ip(ip)]
+
     if src_to_public:
-        return src_to_public.most_common(1)[0][0]
+        pool = _hosts(src_to_public) or list(src_to_public)
+        return max(pool, key=lambda ip: src_to_public[ip])
     both = [ip for ip in src_private if ip in dst_private]
-    pool = both or list(src_private) or list(dst_private)
+    host_both = [ip for ip in both if not _is_likely_router_ip(ip)]
+    host_src = _hosts(src_private)
+    host_dst = _hosts(dst_private)
+    pool = host_both or host_src or host_dst or both or list(src_private) or list(dst_private)
     if not pool:
         return None
     counts = src_private if src_private else dst_private
@@ -476,34 +396,7 @@ def main() -> int:
 
     phone = phones[0]
     _log(f"USB iPhone: {phone.get('name') or phone.get('udid') or '?'}")
-    records, wifi_err = _browse_mobdev2(3.0)
-    chosen = _pick_record(phone, records) if records else None
-    wifi_lockdown_just_set = False
-
-    if chosen is None:
-        _log("Bonjour empty (typical when the phone is on another subnet). Checking Wi-Fi lockdown...")
-        wifi_lockdown_just_set = _ensure_wifi_lockdown_on()
-        if wifi_lockdown_just_set:
-            records, wifi_err = _browse_mobdev2(3.0)
-            chosen = _pick_record(phone, records) if records else None
-
-    if chosen is not None:
-        payload = {
-            "ok": True,
-            "ip": chosen["ip"],
-            "deviceName": chosen["name"] or phone["name"],
-            "udid": phone["udid"],
-            "source": "bonjour-mobdev2",
-            "wifiLockdownJustSet": wifi_lockdown_just_set,
-            "wifiPowerJustSet": False,
-        }
-        print(json.dumps(payload, ensure_ascii=True))
-        return 0
-
-    _log(
-        "Bonjour mobdev2 advertised no IPv4 (unseen from this PC - likely another "
-        "subnet / mDNS not crossing routers). USB pcapd on en0 (~8s)..."
-    )
+    _log("USB pcapd on en0 (~8s)...")
     usb_ip, assoc, usb_note = _usb_wifi_ipv4(phone.get("udid") or "")
     if usb_ip:
         payload = {
@@ -512,21 +405,16 @@ def main() -> int:
             "deviceName": phone["name"],
             "udid": phone["udid"],
             "source": "usb-pcapd",
-            "wifiLockdownJustSet": wifi_lockdown_just_set,
+            "wifiLockdownJustSet": False,
             "wifiPowerJustSet": False,
             "wifiAssociated": assoc.get("associated"),
         }
         print(json.dumps(payload, ensure_ascii=True))
         return 0
 
-    bonjour_bit = (wifi_err or "").strip().replace("\n", " ")[:180]
-    if bonjour_bit in ("[]", "{}", "null"):
-        bonjour_bit = ""
     print(
-        "NO_WIFI_IP: USB iPhone present but no Wi-Fi IPv4. Bonjour mobdev2 unseen "
-        f"(likely other subnet / mDNS; usb={phone.get('name')}"
-        f"{'; ' + bonjour_bit if bonjour_bit else ''}). "
-        f"USB fallback found no IPv4 ({_assoc_brief(assoc)}"
+        "NO_WIFI_IP: USB iPhone present but no Wi-Fi IPv4 from pcapd "
+        f"(usb={phone.get('name')}; {_assoc_brief(assoc)}"
         f"{'; ' + usb_note if usb_note else ''}).",
         file=sys.stderr,
         flush=True,

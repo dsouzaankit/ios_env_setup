@@ -10,3 +10,7 @@ ign/
 **/__pycache__/
 *.pyc
 .venv/
+
+# Clash controller API secret and local installer — do not publish
+Clash/profiles/controller.secret
+Clash/*.exe
