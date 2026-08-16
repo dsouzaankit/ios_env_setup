@@ -61,7 +61,7 @@ All names use the **`IosEnv-`** prefix (not Loop Segments). Loop Segments may st
 | Task | Created by | Privileges | When it runs | What it does |
 |------|------------|------------|--------------|--------------|
 | `IosEnv-AltServer-TrayKick` | `Get-AltServer.ps1` on start (dummy 2099 trigger; `Start-ScheduledTask`) | Interactive, Limited | On demand when AltServer must appear in the tray | Launches `AltServer.exe` the same way as Start Menu / double-click. Replaces leftover `LoopSegments-AltServer-TrayKick`. |
-| `IosEnv-AltServer-UsbWatch` | `Register-IphoneUsbAltServer.ps1` | Interactive, Limited | At logon, immediately, and every **2 min** if it died (`IgnoreNew` if already running) | Hidden `Watch-IphoneUsbAltServer.ps1`: on USB **plug-in** (20s debounce), start AltServer, drop Clash multicast, phone-subnet check. |
+| `IosEnv-AltServer-UsbWatch` | `Register-IphoneUsbAltServer.ps1` | Interactive, Limited | At logon, immediately, and every **2 min** if it died (`IgnoreNew` if already running) | Hidden `Watch-IphoneUsbAltServer.ps1` via `wscript` (no console). Task stays **Running** while that watcher is up; **Ready** means the last start exited. |
 | `IosEnv-Clash-RemoveMihomoMulticast` | Same register script (one **UAC** via `Clash\Register-ClashRemoveMulticastRouteTask.ps1`) | Interactive, **Highest** | On demand each USB plug-in (`Start-ScheduledTask`) | `Clash\Remove-MihomoMulticastRoute.ps1`: drop TUN `224.0.0.0/4`, raise Mihomo metric, restart Bonjour. |
 
 ```powershell
@@ -81,12 +81,24 @@ One-shot test (phone already plugged in):
 pwsh -File .\Watch-IphoneUsbAltServer.ps1 -Once
 ```
 
-Register a logon task (starts the watcher now, hidden). Same user, interactive, no admin. Task Scheduler also kicks it every 2 minutes if it died (`IgnoreNew` if already running).
+Register a logon task (starts the watcher now, no console). Same user, interactive, no admin. Task Scheduler also kicks it every 2 minutes if it died (`IgnoreNew` if already running). Direct `pwsh.exe` from an Interactive task always shows a window; the default action is `wscript` + `Start-IphoneUsbAltServerWatchHidden.vbs` (WMI hidden process, wait until Watch exits) so keep-alive starts stay hidden and the task stays **Running**. Re-registering stops leftover Watch `pwsh` so the task owns the process (otherwise keep-alive hits the mutex, exits 0, and you only ever see **Ready**).
 
 ```powershell
 pwsh -File .\Register-IphoneUsbAltServer.ps1
 pwsh -File .\Register-IphoneUsbAltServer.ps1 -Unregister
 ```
+
+There is no console while it runs. Confirm it is actually in the background:
+
+```powershell
+Get-ScheduledTask -TaskName 'IosEnv-AltServer-UsbWatch' | Select-Object TaskName, State
+Get-CimInstance Win32_Process |
+  Where-Object { $_.CommandLine -match 'Watch-IphoneUsbAltServer|Start-IphoneUsbAltServerWatchHidden' } |
+  Select-Object ProcessId, Name, CommandLine
+Get-Content .\iphone-usb-altserver.log -Tail 15
+```
+
+**Running** plus both `wscript` and a Watch `pwsh` means the hidden watcher is up. **Ready** with no Watch `pwsh` means it is not. **Ready** with a leftover Watch `pwsh` is an orphan (re-run Register so the task owns the process). Plug/unplug USB: a new `==== USB connect` line in the log is the functional check.
 
 `-ShowWindow` keeps a console; `-SkipPhoneSubnet` only ensures AltServer. Log: `altserver_refresh_scripts\iphone-usb-altserver.log` (gitignored; keeps the last **5** USB-connect sessions). Unlock and Trust This Computer or usbmux is empty (retries a few times). Off-subnet still runs **WifiRestart** on that plug-in.
 

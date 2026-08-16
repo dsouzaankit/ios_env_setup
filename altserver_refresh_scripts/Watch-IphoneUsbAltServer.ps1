@@ -201,7 +201,7 @@ $owns = $false
 try {
     $mutex = New-Object System.Threading.Mutex($false, 'Local\IosEnvAltServerUsbWatch')
     try {
-        $owns = $mutex.WaitOne(15000)
+        $owns = $mutex.WaitOne(0)
     } catch [System.Threading.AbandonedMutexException] {
         $owns = $true
     }
@@ -241,17 +241,21 @@ try {
     $wasConnected = $false
     $cooldownUntil = [datetime]::MinValue
     while ($true) {
-        $now = Test-IphoneUsbConnected
-        if ($now -and -not $wasConnected) {
-            $utc = [datetime]::UtcNow
-            if ($utc -ge $cooldownUntil) {
-                Invoke-UsbAltServerOnPlug -SkipPhoneSubnet:$SkipPhoneSubnet
-                $cooldownUntil = [datetime]::UtcNow.AddSeconds([Math]::Max(0, $CooldownSeconds))
-            } else {
-                Write-UsbLog 'USB appeared again inside cooldown; skip'
+        try {
+            $now = Test-IphoneUsbConnected
+            if ($now -and -not $wasConnected) {
+                $utc = [datetime]::UtcNow
+                if ($utc -ge $cooldownUntil) {
+                    Invoke-UsbAltServerOnPlug -SkipPhoneSubnet:$SkipPhoneSubnet
+                    $cooldownUntil = [datetime]::UtcNow.AddSeconds([Math]::Max(0, $CooldownSeconds))
+                } else {
+                    Write-UsbLog 'USB appeared again inside cooldown; skip'
+                }
             }
+            $wasConnected = $now
+        } catch {
+            Write-UsbLog ("Watch poll error: {0}" -f $_.Exception.Message)
         }
-        $wasConnected = $now
         Start-Sleep -Seconds ([Math]::Max(1, $PollSeconds))
     }
 } finally {

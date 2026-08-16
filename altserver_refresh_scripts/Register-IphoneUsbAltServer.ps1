@@ -47,6 +47,20 @@ $JoinPath = Join-Path $ScriptDir 'Join-AltStoreDeployPrep.ps1'
 $ClashCore = Join-Path (Split-Path -Parent $ScriptDir) 'Clash\Get-Clash.ps1'
 if (Test-Path -LiteralPath $ClashCore) { . $ClashCore }
 
+function Stop-IosEnvUsbWatchProcesses {
+    $match = @()
+    try {
+        $match = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+                $_.CommandLine -and
+                $_.CommandLine -notmatch '-Once' -and
+                ($_.CommandLine -match 'Watch-IphoneUsbAltServer' -or $_.CommandLine -match 'Start-IphoneUsbAltServerWatchHidden')
+            })
+    } catch {}
+    foreach ($p in $match) {
+        try { Stop-Process -Id $p.ProcessId -Force -ErrorAction Stop } catch {}
+    }
+}
+
 if ($Unregister) {
     $existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
     if ($existing) {
@@ -85,12 +99,6 @@ if (-not $pwsh) {
     throw 'PowerShell 7 (pwsh) is required. Install from https://aka.ms/powershell'
 }
 
-$window = 'Hidden'
-if ($ShowWindow) { $window = 'Normal' }
-$fileArgs = "-NoProfile -ExecutionPolicy Bypass -WindowStyle $window -File `"$WatchScript`""
-if ($SkipPhoneSubnet) { $fileArgs = "$fileArgs -SkipPhoneSubnet" }
-
-$action = New-ScheduledTaskAction -Execute $pwsh -Argument $fileArgs -WorkingDirectory $ScriptDir
 $triggerLogon = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 $triggerKeep = New-ScheduledTaskTrigger -Once -At ((Get-Date).AddMinutes(1)) -RepetitionInterval (New-TimeSpan -Minutes 2) -RepetitionDuration (New-TimeSpan -Days 3650)
 # TimeSpan.Zero becomes ExecutionTimeLimit 00:00:00, which this Task Scheduler rejects.
@@ -100,6 +108,23 @@ try {
 } catch {}
 $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
 
+if ($ShowWindow) {
+    $fileArgs = "-WindowStyle Normal -NoProfile -ExecutionPolicy Bypass -File `"$WatchScript`""
+    if ($SkipPhoneSubnet) { $fileArgs = "$fileArgs -SkipPhoneSubnet" }
+    $action = New-ScheduledTaskAction -Execute $pwsh -Argument $fileArgs -WorkingDirectory $ScriptDir
+} else {
+    $vbs = Join-Path $ScriptDir 'Start-IphoneUsbAltServerWatchHidden.vbs'
+    if (-not (Test-Path -LiteralPath $vbs)) {
+        throw "Missing $vbs"
+    }
+    $wscript = Join-Path $env:SystemRoot 'System32\wscript.exe'
+    $vbsArgs = "//nologo `"$vbs`" `"$pwsh`" `"$WatchScript`""
+    if ($SkipPhoneSubnet) { $vbsArgs = "$vbsArgs -SkipPhoneSubnet" }
+    $action = New-ScheduledTaskAction -Execute $wscript -Argument $vbsArgs -WorkingDirectory $ScriptDir
+}
+
+Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+Stop-IosEnvUsbWatchProcesses
 Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger @($triggerLogon, $triggerKeep) -Settings $settings -Principal $principal -Force -ErrorAction Stop | Out-Null
 try {
     $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop
@@ -125,27 +150,28 @@ if ($SkipPhoneSubnet) {
     Write-Host 'Mode: AltServer tray + Clash multicast drop + phone-subnet check on each USB plug-in'
 }
 if (Get-Command Start-ClashRegisterMulticastTaskElevated -ErrorAction SilentlyContinue) {
-    try {
-        $mdnsName = Start-ClashRegisterMulticastTaskElevated
-        Write-Host "Registered: $mdnsName (highest; started on each USB plug-in, no per-cable UAC)"
-    } catch {
-        Write-Warning ("Could not register elevated multicast task ({0}). USB plug-in will prompt UAC to drop 224.0.0.0/4." -f $_.Exception.Message)
+    $mdnsName = Get-ClashRemoveMulticastRouteTaskName
+    $mdnsTask = Get-ScheduledTask -TaskName $mdnsName -ErrorAction SilentlyContinue
+    if ($mdnsTask) {
+        Write-Host "Already registered: $mdnsName (highest; started on each USB plug-in, no per-cable UAC)"
+    } else {
+        try {
+            $mdnsName = Start-ClashRegisterMulticastTaskElevated
+            Write-Host "Registered: $mdnsName (highest; started on each USB plug-in, no per-cable UAC)"
+        } catch {
+            Write-Warning ("Could not register elevated multicast task ({0}). USB plug-in will prompt UAC to drop 224.0.0.0/4." -f $_.Exception.Message)
+        }
     }
 }
 Write-Host ("Log: {0}" -f (Join-Path $ScriptDir 'iphone-usb-altserver.log'))
 Write-Host ("Remove: pwsh -File `"{0}`" -Unregister" -f (Join-Path $ScriptDir 'Register-IphoneUsbAltServer.ps1'))
 
 if (-not $NoStart) {
+    Start-ScheduledTask -TaskName $TaskName -ErrorAction Stop
     Start-Sleep -Seconds 2
-    $alive = $false
-    try {
-        $alive = [bool]@(Get-CimInstance Win32_Process -Filter "Name = 'pwsh.exe'" -ErrorAction SilentlyContinue |
-            Where-Object { $_.CommandLine -and $_.CommandLine -match 'Watch-IphoneUsbAltServer' }).Count
-    } catch {}
-    if ($alive) {
-        Write-Host "Watcher process already running; not starting a second instance."
-    } else {
-        Start-ScheduledTask -TaskName $TaskName -ErrorAction Stop
-        Write-Host "Started $TaskName."
+    $state = [string](Get-ScheduledTask -TaskName $TaskName).State
+    Write-Host "Started $TaskName (State=$state). Hidden watcher should stay Running until it exits; 2-min keep-alive is ignored while Running."
+    if ($state -ne 'Running') {
+        Write-Warning 'UsbWatch is not Running. Check iphone-usb-altserver.log and Task Scheduler Last Run Result.'
     }
 }
