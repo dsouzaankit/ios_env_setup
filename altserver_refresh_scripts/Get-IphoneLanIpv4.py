@@ -139,15 +139,66 @@ def _is_public_unicast(ip: str) -> bool:
 
 
 _FAKE_ETHER = b"\xbe\xef" * 6 + b"\x08\x00"
+_SKIP_IFACE_PREFIX = (
+    "pdp_ip",
+    "utun",
+    "ipsec",
+    "lo",
+    "awdl",
+    "ap",
+    "llw",
+    "anpi",
+    "xhc",
+    "gif",
+    "stf",
+)
 
 
-def _is_wifi_iface(name: str, unit: int) -> bool:
-    """True for the infrastructure Wi-Fi NIC (en0). pcapd often splits prefix/unit."""
+def _pkt_iface_name(raw: Any) -> str:
+    if isinstance(raw, (bytes, bytearray)):
+        return raw.split(b"\x00", 1)[0].decode("ascii", "ignore").strip()
+    return str(raw or "").strip()
+
+
+def _iface_key(name: str, unit: int) -> str:
     n = (name or "").strip().lower()
-    if n in ("en0", "en0:0"):
+    if not n:
+        return f"?{int(unit)}"
+    if n[-1].isdigit():
+        return n
+    return f"{n}{int(unit)}"
+
+
+def _is_skipped_iface(key: str) -> bool:
+    k = (key or "").lower()
+    return k.startswith(_SKIP_IFACE_PREFIX)
+
+
+def _is_wifi_iface(name: str, unit: int, expected: str = "en0") -> bool:
+    """True for the infrastructure Wi-Fi NIC. pcapd often splits prefix/unit (en + 0)."""
+    key = _iface_key(name, unit)
+    exp = (expected or "en0").strip().lower() or "en0"
+    if key == exp:
         return True
-    if n == "en" and int(unit) == 0:
+    n = (name or "").strip().lower()
+    if n in (exp, "en0", "en0:0"):
         return True
+    if n == "en" and int(unit) == 0 and exp in ("en0", "en"):
+        return True
+    return False
+
+
+def _is_wifi_like_iface(name: str, unit: int, expected: str, type_name: str) -> bool:
+    if _is_wifi_iface(name, unit, expected):
+        return True
+    key = _iface_key(name, unit)
+    if _is_skipped_iface(key):
+        return False
+    t = (type_name or "").lower()
+    if t in ("ethernetcsmacd", "ieee80211", "gigabitethernet", "fastether"):
+        # iOS 26 pcapd may label en0 as "en" + nonzero unit, or omit the name.
+        if key.startswith("en") or key.startswith("?"):
+            return True
     return False
 
 
@@ -316,12 +367,14 @@ async def _usb_wifi_probe(udid: str, capture_sec: float = 8.0) -> tuple[str | No
             assoc = {"associated": None, "error": f"{type(exc).__name__}: {exc}"[:180]}
 
         phone_mac = assoc.get("mac") if isinstance(assoc.get("mac"), (bytes, bytearray)) else None
+        expected_iface = str(assoc.get("iface") or "en0").strip() or "en0"
         ip: str | None = None
         src_private: Counter[str] = Counter()
         src_to_public: Counter[str] = Counter()
         dst_private: Counter[str] = Counter()
         wifi_packets = 0
         total_packets = 0
+        iface_hits: Counter[str] = Counter()
 
         for attempt in range(1, 3):
             src_private = Counter()
@@ -330,6 +383,7 @@ async def _usb_wifi_probe(udid: str, capture_sec: float = 8.0) -> tuple[str | No
             mac_src: Counter[str] = Counter()
             wifi_packets = 0
             total_packets = 0
+            iface_hits = Counter()
             pcap_note = ""
 
             try:
@@ -340,9 +394,13 @@ async def _usb_wifi_probe(udid: str, capture_sec: float = 8.0) -> tuple[str | No
                         nonlocal wifi_packets, total_packets
                         async for pkt in pcap.watch(packets_count=-1):
                             total_packets += 1
-                            name = str(getattr(pkt, "interface_name", "") or "")
+                            name = _pkt_iface_name(getattr(pkt, "interface_name", ""))
                             unit = int(getattr(pkt, "unit", 0) or 0)
-                            if not _is_wifi_iface(name, unit):
+                            type_raw = getattr(pkt, "interface_type", None)
+                            type_name = str(getattr(type_raw, "name", type_raw) or "")
+                            key = _iface_key(name, unit)
+                            iface_hits[key] += 1
+                            if not _is_wifi_like_iface(name, unit, expected_iface, type_name):
                                 best = _best_mac_src(mac_src) or _pick_phone_ip(
                                     src_private, src_to_public, dst_private
                                 )
@@ -397,8 +455,11 @@ async def _usb_wifi_probe(udid: str, capture_sec: float = 8.0) -> tuple[str | No
                 )
                 pcap_note = (
                     f"pcapd timeout after {total_packets} packets "
-                    f"({wifi_packets} on en0) attempt {attempt}/2"
+                    f"({wifi_packets} on {expected_iface}) attempt {attempt}/2"
                 )
+                if iface_hits:
+                    top = ", ".join(f"{k}:{n}" for k, n in iface_hits.most_common(6))
+                    pcap_note += f"; ifaces={top}"
             except Exception as exc:
                 assoc["gatewayHint"] = gateway_hint
                 return (
@@ -420,8 +481,8 @@ async def _usb_wifi_probe(udid: str, capture_sec: float = 8.0) -> tuple[str | No
                 if radio_down and total_packets == 0:
                     notes.append("wifi not associated; not retrying an empty capture")
                     break
-                if total_packets == 0:
-                    _log("pcapd attempt 1 saw 0 packets; retrying with a longer window...")
+                if total_packets == 0 or wifi_packets == 0:
+                    _log("pcapd attempt 1 saw no Wi-Fi IPv4 frames; retrying with a longer window...")
                     capture_sec = max(float(capture_sec), 16.0)
                 elif associated or gateway_hint or src_private or dst_private:
                     _log("pcapd attempt 1 had no phone host IP; retrying...")
@@ -432,7 +493,7 @@ async def _usb_wifi_probe(udid: str, capture_sec: float = 8.0) -> tuple[str | No
     assoc["gatewayHint"] = gateway_hint
     if ip:
         return ip, assoc, "; ".join(notes)
-    bits = notes or [f"pcapd saw {total_packets} packets ({wifi_packets} on en0)"]
+    bits = notes or [f"pcapd saw {total_packets} packets ({wifi_packets} on {assoc.get('iface') or 'en0'})"]
     if not src_private and not dst_private:
         bits.append("no private IPv4 on Wi-Fi frames")
     elif gateway_hint:

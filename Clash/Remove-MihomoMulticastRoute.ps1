@@ -5,7 +5,12 @@
 
 .DESCRIPTION
   Run elevated after enabling TUN. Mihomo often re-adds this route; interface index is not stable.
+  Also sets Mihomo interface metric high and restarts Bonjour so _altserver._tcp is on Wi-Fi.
 #>
 $ErrorActionPreference = 'Continue'
 . (Join-Path $PSScriptRoot 'Get-Clash.ps1')
-[void](Invoke-ClashRemoveMulticastRoute)
+if (Get-Command Invoke-ClashFixBonjourAfterMulticast -ErrorAction SilentlyContinue) {
+    [void](Invoke-ClashFixBonjourAfterMulticast)
+} else {
+    [void](Invoke-ClashRemoveMulticastRoute)
+}

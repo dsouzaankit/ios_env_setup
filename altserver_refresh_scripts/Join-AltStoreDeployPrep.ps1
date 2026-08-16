@@ -84,6 +84,55 @@ function Get-IosAltStorePrepExitCode {
     return 1
 }
 
+function Get-IosAltStoreClashCore {
+    $root = Split-Path -Parent $script:IosAltRefreshDir
+    $core = Join-Path $root 'Clash\Get-Clash.ps1'
+    if ($core -and (Test-Path -LiteralPath $core)) { return $core }
+    return $null
+}
+
+function Invoke-IosAltStoreClashMdns {
+    $core = Get-IosAltStoreClashCore
+    if (-not $core) { return }
+    . $core
+    if (-not (Test-ClashRunning)) { return }
+    Write-Host '[altserver] Clash/mihomo is running. Dropping TUN 224.0.0.0/4 so AltStore can find AltServer (Bonjour).'
+    if (Test-ClashProcessElevated) {
+        [void](Invoke-ClashFixBonjourAfterMulticast)
+        return
+    }
+    $started = $false
+    if (Get-Command Start-ClashRemoveMulticastRouteTask -ErrorAction SilentlyContinue) {
+        $started = [bool](Start-ClashRemoveMulticastRouteTask)
+    }
+    if (-not $started -and (Get-Command Register-ClashRemoveMulticastRouteTask -ErrorAction SilentlyContinue)) {
+        try {
+            $mdnsName = Register-ClashRemoveMulticastRouteTask
+            Write-Host ("[altserver] Registered elevated task {0}" -f $mdnsName)
+            $started = [bool](Start-ClashRemoveMulticastRouteTask)
+        } catch {
+            Write-Warning ("[altserver] Could not register elevated multicast task: {0}" -f $_.Exception.Message)
+        }
+    }
+    if ($started) {
+        Start-Sleep -Seconds 2
+        if (Test-ClashMulticastRoutePresent) {
+            Write-Warning '[altserver] Elevated multicast task ran; 224.0.0.0/4 is still on Mihomo.'
+        } else {
+            Write-Host '[altserver] Mihomo multicast route clear. Retry AltStore Refresh All if it said AltServer not found.'
+        }
+        return
+    }
+    Write-Host '[altserver] Need elevation to drop Mihomo 224.0.0.0/4 (approve UAC)...'
+    [void](Start-ClashRemoveMulticastRouteElevated)
+    if (Test-ClashMulticastRoutePresent) {
+        $script = Get-ClashRemoveMulticastRouteScript
+        Write-Warning ("[altserver] AltStore will say AltServer not found until you run elevated: pwsh -File `"{0}`"" -f $script)
+    } else {
+        Write-Host '[altserver] Mihomo multicast route removed. Retry AltStore Refresh All.'
+    }
+}
+
 function Invoke-AltStoreDeployPrep {
     param(
         [switch] $SkipPhoneSubnet
@@ -113,6 +162,8 @@ function Invoke-AltStoreDeployPrep {
     } else {
         Write-Warning ("[altserver] Tray start did not confirm usable (exit {0}). Check the notification area / hidden icons (^)." -f $altCode)
     }
+
+    Invoke-IosAltStoreClashMdns
 
     if ($SkipPhoneSubnet) {
         Write-Host '[altserver] Skipping phone-subnet check (-SkipPhoneSubnet).'

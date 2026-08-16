@@ -90,13 +90,12 @@ function Start-AltServerInteractive {
     # notification-area icon (process shows in Task Manager only). Kick a
     # "run only when user is logged on" task so Explorer gets the same
     # interactive launch as a Start Menu / double-click.
-    $taskName = 'LoopSegments-AltServer-TrayKick'
+    $taskName = 'IosEnv-AltServer-TrayKick'
     $workDir = Split-Path -Parent $FilePath
     $action = New-ScheduledTaskAction -Execute $FilePath -WorkingDirectory $workDir
     $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
     try {
         $settings.MultipleInstances = 'IgnoreNew'
-        $settings.ExecutionTimeLimit = [TimeSpan]::Zero
     } catch {}
     # PS 5.1 cannot parse ISO '2099-01-01T00:00:00' (throws under $ErrorActionPreference Stop).
     $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date -Year 2099 -Month 1 -Day 1)
@@ -106,6 +105,10 @@ function Start-AltServerInteractive {
     try {
         Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force | Out-Null
         Start-ScheduledTask -TaskName $taskName
+        $old = Get-ScheduledTask -TaskName 'LoopSegments-AltServer-TrayKick' -ErrorAction SilentlyContinue
+        if ($old) {
+            Unregister-ScheduledTask -TaskName 'LoopSegments-AltServer-TrayKick' -Confirm:$false -ErrorAction SilentlyContinue
+        }
         return 'interactive-task'
     } catch {
         Write-Host ("[altserver] Interactive task launch failed ({0}); trying Explorer ShellExecute." -f $_.Exception.Message) -ForegroundColor DarkYellow

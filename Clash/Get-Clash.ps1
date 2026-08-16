@@ -31,6 +31,99 @@ function Get-ClashRemoveMulticastRouteScript {
     Join-Path $PSScriptRoot 'Remove-MihomoMulticastRoute.ps1'
 }
 
+function Get-ClashRemoveMulticastRouteTaskName {
+    'IosEnv-Clash-RemoveMihomoMulticast'
+}
+
+function Get-ClashRegisterMulticastTaskScript {
+    Join-Path $PSScriptRoot 'Register-ClashRemoveMulticastRouteTask.ps1'
+}
+
+function Start-ClashRegisterMulticastTaskElevated {
+    param([switch] $Unregister)
+    $reg = Get-ClashRegisterMulticastTaskScript
+    if (-not (Test-Path -LiteralPath $reg)) {
+        throw "Missing $reg"
+    }
+    if (Test-ClashProcessElevated) {
+        if ($Unregister) {
+            [void](Unregister-ClashRemoveMulticastRouteTask)
+            return $null
+        }
+        return Register-ClashRemoveMulticastRouteTask
+    }
+    Write-Host '[clash] UAC once to register IosEnv-Clash-RemoveMihomoMulticast (highest; not every USB plug-in)...'
+    $pwsh = Get-ClashPwshExe
+    $arg = "-NoProfile -ExecutionPolicy Bypass -File `"$reg`""
+    if ($Unregister) { $arg = "$arg -Unregister" }
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $pwsh
+    $psi.Arguments = $arg
+    $psi.UseShellExecute = $true
+    $psi.Verb = 'runas'
+    try {
+        $p = [System.Diagnostics.Process]::Start($psi)
+        if ($null -eq $p) { throw 'elevated process did not start' }
+        if (-not $p.WaitForExit(120000)) {
+            throw 'elevated register still running after 120s'
+        }
+        if ($p.ExitCode -ne 0) {
+            throw ("elevated register exit {0}" -f $p.ExitCode)
+        }
+    } catch {
+        throw $_
+    }
+    if ($Unregister) { return $null }
+    $name = Get-ClashRemoveMulticastRouteTaskName
+    $t = Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
+    if (-not $t) {
+        throw 'elevated multicast task was not created (UAC canceled?)'
+    }
+    return $name
+}
+
+function Register-ClashRemoveMulticastRouteTask {
+    $script = Get-ClashRemoveMulticastRouteScript
+    if (-not (Test-Path -LiteralPath $script)) {
+        throw "Missing $script"
+    }
+    $pwsh = Get-ClashPwshExe
+    $name = Get-ClashRemoveMulticastRouteTaskName
+    $arg = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$script`""
+    $action = New-ScheduledTaskAction -Execute $pwsh -Argument $arg -WorkingDirectory (Get-ClashDir)
+    $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date -Year 2099 -Month 1 -Day 1)
+    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
+    try { $settings.MultipleInstances = 'IgnoreNew' } catch {}
+    $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Highest
+    Register-ScheduledTask -TaskName $name -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force -ErrorAction Stop | Out-Null
+    return $name
+}
+
+function Unregister-ClashRemoveMulticastRouteTask {
+    $name = Get-ClashRemoveMulticastRouteTaskName
+    $existing = Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
+    if ($existing) {
+        Unregister-ScheduledTask -TaskName $name -Confirm:$false
+        return $true
+    }
+    return $false
+}
+
+function Start-ClashRemoveMulticastRouteTask {
+    $name = Get-ClashRemoveMulticastRouteTaskName
+    $t = Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
+    if (-not $t) { return $false }
+    Start-ScheduledTask -TaskName $name
+    $deadline = [datetime]::UtcNow.AddSeconds(45)
+    while ([datetime]::UtcNow -lt $deadline) {
+        Start-Sleep -Milliseconds 400
+        $st = Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
+        if ($null -eq $st) { break }
+        if ([string]$st.State -ne 'Running') { break }
+    }
+    return $true
+}
+
 function Get-ClashMihomoTunAddresses {
     $out = [System.Collections.Generic.List[object]]::new()
     foreach ($a in @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue)) {
@@ -93,7 +186,7 @@ function Start-ClashRemoveMulticastRouteElevated {
         return Invoke-ClashRemoveMulticastRoute
     }
     if (-not (Test-ClashMulticastRoutePresent)) {
-        Write-Host '[clash] No 224.0.0.0/4 on Mihomo — skip elevation'
+        Write-Host '[clash] No 224.0.0.0/4 on Mihomo - skip elevation'
         return [pscustomobject]@{ Removed = 0; Present = $false; Elevated = $false }
     }
     Write-Host '[clash] UAC for Remove-MihomoMulticastRoute.ps1 only (companion stays unelevated)...'
@@ -120,6 +213,9 @@ function Start-ClashRemoveMulticastRouteElevated {
 }
 
 function Invoke-ClashRemoveMulticastRoute {
+    if (-not (Test-ClashProcessElevated)) {
+        return [pscustomobject]@{ Removed = 0; Present = (Test-ClashMulticastRoutePresent); NeedElevation = $true }
+    }
     $idxs = @(Get-ClashMihomoTunInterfaceIndexes)
     if ($idxs.Count -eq 0) {
         Write-Host '[clash] No Mihomo/Clash TUN IPv4 found (TUN off?).'
@@ -143,6 +239,42 @@ function Invoke-ClashRemoveMulticastRoute {
         Write-Host '[clash] No 224.0.0.0/4 route on Mihomo (already clear).'
     }
     return [pscustomobject]@{ Removed = $removed; Present = $still }
+}
+
+function Invoke-ClashFixBonjourAfterMulticast {
+    $route = Invoke-ClashRemoveMulticastRoute
+    $metricSet = $false
+    try {
+        $ifs = @(Get-NetIPInterface -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object {
+                [string]$_.InterfaceAlias -match '(?i)mihomo'
+            })
+        foreach ($i in $ifs) {
+            try {
+                Set-NetIPInterface -InterfaceIndex $i.InterfaceIndex -AddressFamily IPv4 -InterfaceMetric 9999 -ErrorAction Stop
+                $metricSet = $true
+                Write-Host ("[clash] Mihomo if {0} metric -> 9999 (Bonjour prefers Wi-Fi)" -f $i.InterfaceIndex)
+            } catch {
+                Write-Warning ("[clash] Could not set Mihomo metric: {0}" -f $_.Exception.Message)
+            }
+        }
+    } catch {}
+    $bonjour = $false
+    try {
+        $svc = Get-Service -Name 'Bonjour Service' -ErrorAction Stop
+        if ($svc) {
+            Restart-Service -Name 'Bonjour Service' -Force -ErrorAction Stop
+            $bonjour = $true
+            Write-Host '[clash] Restarted Bonjour Service so mDNSResponder rebinds off 198.18.0.1'
+        }
+    } catch {
+        Write-Warning ("[clash] Could not restart Bonjour Service: {0}" -f $_.Exception.Message)
+    }
+    return [pscustomobject]@{
+        Removed     = $route.Removed
+        Present     = (Test-ClashMulticastRoutePresent)
+        MetricSet   = $metricSet
+        BonjourRestarted = $bonjour
+    }
 }
 
 function Write-ClashMdnsNotice {

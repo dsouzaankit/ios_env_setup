@@ -8,7 +8,7 @@
 pwsh -File .\Invoke-AltServerIfNeeded.ps1
 ```
 
-Direct run waits for **Enter**. Child callers: `-NoWaitEnter`. Exit **0** running (tray-usable), **2** not installed, **1** start failed. If Task Manager shows `AltServer.exe` but there is no icon, this helper **restarts** it (Explorer restart or a second instance drops the tray). Start uses an interactive scheduled-task kick (same desktop as a Start Menu launch); a plain `Start-Process` from a script/agent does not create the tray icon.
+Direct run waits for **Enter**. Child callers: `-NoWaitEnter`. Exit **0** running (tray-usable), **2** not installed, **1** start failed. If Task Manager shows `AltServer.exe` but there is no icon, this helper **restarts** it (Explorer restart or a second instance drops the tray). Start uses scheduled task **`IosEnv-AltServer-TrayKick`** (interactive, same desktop as a Start Menu launch); a plain `Start-Process` from a script/agent does not create the tray icon. The old name `LoopSegments-AltServer-TrayKick` is unregistered on the next successful kick.
 
 ## Phone-subnet refresh
 
@@ -17,7 +17,7 @@ Uses **pymobiledevice3** to read the iPhone’s current Wi-Fi IPv4 and checks it
 Probe order (`Get-IphoneLanIpv4.py`):
 
 1. USB `usbmux list` (identify the phone)
-2. USB `com.apple.pcapd` on `en0` (up to two captures) — IPv4 from Wi-Fi packet headers; works across subnets without admin tunneld. First window is ~8s. If that window is empty while the radio is associated (idle phones often send nothing), a second ~16s capture runs. Skip the retry only when IORegistry shows Wi-Fi is not associated. A window that only sees the AP (`.1` / `.254`, e.g. `192.168.2.1`) is **not** the phone; that address is kept as an **AP hint** so the matching `telnet_reboot_wlan_*.py` can still run.
+2. USB `com.apple.pcapd` on the IORegistry Wi-Fi iface (usually `en0`; up to two captures) — IPv4 from Wi-Fi packet headers; works across subnets without admin tunneld. First window is ~8s. If that window is empty while the radio is associated (idle phones often send nothing), or packets are only on cellular (`pdp_ip*`), a second ~16s capture runs. Skip the retry only when IORegistry shows Wi-Fi is not associated. A window that only sees the AP (`.1` / `.254`, e.g. `192.168.2.1`) is **not** the phone; that address is kept as an **AP hint** so the matching `telnet_reboot_wlan_*.py` can still run. On a miss, stderr includes `ifaces=pdp_ip0:55,en0:2` so you can see which BSD names pcapd used.
 
 Bonjour `mobdev2` is **not** used (mDNS is often empty on the same subnet).
 
@@ -53,3 +53,47 @@ if ($join) { . $join; Invoke-AltStoreDeployPrep }
 ```
 
 `-SkipAltStorePrep` on those deploy scripts skips this. Pythonista zip deploys (`bike_train_transit`, `quick_open_apps`, `iOS-SOCKS-Server`) do not use AltStore.
+
+## Scheduled tasks (this repo)
+
+All names use the **`IosEnv-`** prefix (not Loop Segments). Loop Segments may still register its own `LoopSegments-AltServer` logon task via `windows\sideload\Register-AltServerAtLogon.ps1`; that is a different repo.
+
+| Task | Created by | Privileges | When it runs | What it does |
+|------|------------|------------|--------------|--------------|
+| `IosEnv-AltServer-TrayKick` | `Get-AltServer.ps1` on start (dummy 2099 trigger; `Start-ScheduledTask`) | Interactive, Limited | On demand when AltServer must appear in the tray | Launches `AltServer.exe` the same way as Start Menu / double-click. Replaces leftover `LoopSegments-AltServer-TrayKick`. |
+| `IosEnv-AltServer-UsbWatch` | `Register-IphoneUsbAltServer.ps1` | Interactive, Limited | At logon, immediately, and every **2 min** if it died (`IgnoreNew` if already running) | Hidden `Watch-IphoneUsbAltServer.ps1`: on USB **plug-in** (20s debounce), start AltServer, drop Clash multicast, phone-subnet check. |
+| `IosEnv-Clash-RemoveMihomoMulticast` | Same register script (one **UAC** via `Clash\Register-ClashRemoveMulticastRouteTask.ps1`) | Interactive, **Highest** | On demand each USB plug-in (`Start-ScheduledTask`) | `Clash\Remove-MihomoMulticastRoute.ps1`: drop TUN `224.0.0.0/4`, raise Mihomo metric, restart Bonjour. |
+
+```powershell
+Get-ScheduledTask -TaskName 'IosEnv-*' | Select-Object TaskName, State
+pwsh -File .\Register-IphoneUsbAltServer.ps1 -Unregister   # UsbWatch + Clash multicast; not TrayKick
+```
+
+`TrayKick` is recreated the next time AltServer is started from these helpers. It does not need to sit in Task Scheduler until then.
+
+## Run on iPhone USB plug-in
+
+`Watch-IphoneUsbAltServer.ps1` polls PnP for Apple USB. On each **plug-in** (not while the cable stays in) it starts AltServer and runs the phone-subnet check. It does **not** tap AltStore Refresh All.
+
+One-shot test (phone already plugged in):
+
+```powershell
+pwsh -File .\Watch-IphoneUsbAltServer.ps1 -Once
+```
+
+Register a logon task (starts the watcher now, hidden). Same user, interactive, no admin. Task Scheduler also kicks it every 2 minutes if it died (`IgnoreNew` if already running).
+
+```powershell
+pwsh -File .\Register-IphoneUsbAltServer.ps1
+pwsh -File .\Register-IphoneUsbAltServer.ps1 -Unregister
+```
+
+`-ShowWindow` keeps a console; `-SkipPhoneSubnet` only ensures AltServer. Log: `altserver_refresh_scripts\iphone-usb-altserver.log` (gitignored; keeps the last **5** USB-connect sessions). Unlock and Trust This Computer or usbmux is empty (retries a few times). Off-subnet still runs **WifiRestart** on that plug-in.
+
+Each USB plug-in also runs `Clash\Remove-MihomoMulticastRoute.ps1` via scheduled task `IosEnv-Clash-RemoveMihomoMulticast` (**Run with highest privileges**, no UAC per cable). Re-run `Register-IphoneUsbAltServer.ps1` once to create that task.
+
+AltStore **Refresh All** saying **AltServer not found** with AltServer already in the tray is usually Clash/mihomo TUN stealing multicast (`224.0.0.0/4` on-link `198.18.0.1`, better metric than Wi-Fi). Same subnet is not enough if Bonjour is in the tunnel. Manual:
+
+```powershell
+pwsh -File ..\Clash\Remove-MihomoMulticastRoute.ps1
+```

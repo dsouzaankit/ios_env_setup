@@ -14,3 +14,6 @@ ign/
 # Clash controller API secret and local installer — do not publish
 Clash/profiles/controller.secret
 Clash/*.exe
+
+# USB watcher runtime log
+altserver_refresh_scripts/iphone-usb-altserver.log

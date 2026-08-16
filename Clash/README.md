@@ -25,7 +25,7 @@ On-link delete (gateway is `0.0.0.0`, index is not always 40):
 pwsh -File .\Remove-MihomoMulticastRoute.ps1
 ```
 
-Run **elevated** after enabling TUN (or let the Loop Segments companion UAC-launch **only this script** — the companion process stays unelevated). Clash may re-add the route the next time TUN comes up.
+Run **elevated** after enabling TUN, or register `IosEnv-Clash-RemoveMihomoMulticast` via `altserver_refresh_scripts\Register-IphoneUsbAltServer.ps1` (USB plug-in starts that task with highest privileges, no UAC per cable). Loop Segments companion can UAC-launch **only this script** and stay unelevated. Clash may re-add the route the next time TUN comes up.
 
 ## Profiles
 
@@ -45,7 +45,8 @@ Phone SOCKS is `10.0.100.10:9876` (Loop Segments / iOS SOCKS). If that IP change
 
 | File | Role |
 |------|------|
-| `Get-Clash.ps1` | Dot-source: `Test-ClashRunning`, `Invoke-ClashRemoveMulticastRoute`, `Write-ClashMdnsNotice` |
-| `Remove-MihomoMulticastRoute.ps1` | Elevated entry: drop `224.0.0.0/4` on the Mihomo adapter |
+| `Get-Clash.ps1` | Dot-source: detect Clash, drop multicast, register/start `IosEnv-Clash-RemoveMihomoMulticast` |
+| `Remove-MihomoMulticastRoute.ps1` | Elevated entry: drop `224.0.0.0/4`, raise Mihomo metric, restart Bonjour |
+| `Register-ClashRemoveMulticastRouteTask.ps1` | Elevated: create/remove `IosEnv-Clash-RemoveMihomoMulticast` (UAC once from USB register) |
 
 Loop Segments companion (`windows\pcloud_web_companion`) dotsources `windows\lib\Get-LoopSegmentsClash.ps1`. If Clash/mihomo is running, it prints this folder’s script path and tries the route fix (warns if not elevated). `-SkipClashMdnsRoute` to skip.
