@@ -7,7 +7,10 @@
   Dot-source only. For a direct run with Enter wait, use
   Invoke-AltServerIfNeeded.ps1.
 
-  Finds AltServer.exe, reports whether it is running, and can start it.
+  Finds AltServer.exe and treats it as running only when a single instance
+  is in this desktop session and was started after Explorer. A process in
+  Task Manager is not enough: Explorer restarts drop the tray icon, and a
+  second AltServer.exe often never shows one.
 #>
 
 function Get-AltServerPath {
@@ -31,13 +34,98 @@ function Get-AltServerPath {
     return $null
 }
 
+function Get-AltServerProcess {
+    return @(Get-Process -Name 'AltServer' -ErrorAction SilentlyContinue)
+}
+
+function Get-CurrentSessionId {
+    try { return [int](Get-Process -Id $PID).SessionId } catch { return $null }
+}
+
+function Get-AltServerUnhealthyReason {
+    $procs = @(Get-AltServerProcess)
+    if ($procs.Count -eq 0) { return 'not running' }
+    $session = Get-CurrentSessionId
+    $otherSession = @($procs | Where-Object { $null -ne $session -and [int]$_.SessionId -ne $session })
+    if ($otherSession.Count -gt 0) {
+        return ("process in session {0}, this desktop is {1}" -f $otherSession[0].SessionId, $session)
+    }
+    if ($procs.Count -gt 1) {
+        return ("{0} AltServer.exe processes (stale extra instance; tray often missing)" -f $procs.Count)
+    }
+    $explorer = @(Get-Process -Name 'explorer' -ErrorAction SilentlyContinue |
+        Where-Object { $null -eq $session -or [int]$_.SessionId -eq $session } |
+        Sort-Object StartTime)
+    if ($explorer.Count -gt 0 -and $procs[0].StartTime -lt $explorer[0].StartTime) {
+        return 'started before this Explorer session (tray icon dies when Explorer restarts)'
+    }
+    return $null
+}
+
 function Test-AltServerRunning {
-    return [bool]@(Get-Process -Name 'AltServer' -ErrorAction SilentlyContinue).Count
+    return [string]::IsNullOrWhiteSpace((Get-AltServerUnhealthyReason))
+}
+
+function Stop-AltServer {
+    param([int] $WaitSeconds = 5)
+    $procs = @(Get-AltServerProcess)
+    foreach ($p in $procs) {
+        try {
+            Stop-Process -Id $p.Id -Force -ErrorAction Stop
+        } catch {}
+    }
+    $deadline = [datetime]::UtcNow.AddSeconds([Math]::Max(1, $WaitSeconds))
+    while ([datetime]::UtcNow -lt $deadline) {
+        if (@(Get-AltServerProcess).Count -eq 0) { return $true }
+        Start-Sleep -Milliseconds 200
+    }
+    return (@(Get-AltServerProcess).Count -eq 0)
+}
+
+function Start-AltServerInteractive {
+    param(
+        [Parameter(Mandatory = $true)][string] $FilePath
+    )
+    # Start-Process from a script/agent/hidden console does not create the
+    # notification-area icon (process shows in Task Manager only). Kick a
+    # "run only when user is logged on" task so Explorer gets the same
+    # interactive launch as a Start Menu / double-click.
+    $taskName = 'LoopSegments-AltServer-TrayKick'
+    $workDir = Split-Path -Parent $FilePath
+    $action = New-ScheduledTaskAction -Execute $FilePath -WorkingDirectory $workDir
+    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
+    try {
+        $settings.MultipleInstances = 'IgnoreNew'
+        $settings.ExecutionTimeLimit = [TimeSpan]::Zero
+    } catch {}
+    # PS 5.1 cannot parse ISO '2099-01-01T00:00:00' (throws under $ErrorActionPreference Stop).
+    $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date -Year 2099 -Month 1 -Day 1)
+    $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = 'Stop'
+    try {
+        Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force | Out-Null
+        Start-ScheduledTask -TaskName $taskName
+        return 'interactive-task'
+    } catch {
+        Write-Host ("[altserver] Interactive task launch failed ({0}); trying Explorer ShellExecute." -f $_.Exception.Message) -ForegroundColor DarkYellow
+    } finally {
+        $ErrorActionPreference = $prev
+    }
+
+    try {
+        $shell = New-Object -ComObject Shell.Application
+        $shell.ShellExecute($FilePath)
+        return 'shell-execute'
+    } catch {
+        Start-Process -FilePath $FilePath -WorkingDirectory $workDir | Out-Null
+        return 'start-process'
+    }
 }
 
 function Start-AltServer {
     param(
-        [int] $WaitSeconds = 3
+        [int] $WaitSeconds = 10
     )
 
     $path = Get-AltServerPath
@@ -54,7 +142,8 @@ function Start-AltServer {
     }
 
     if (Test-AltServerRunning) {
-        Write-Host "[altserver] Already running: $path"
+        Write-Host "[altserver] Already running (tray): $path"
+        Write-Host '[altserver] If the icon is missing, check the hidden-icons overflow (^).' -ForegroundColor DarkGray
         return [pscustomobject]@{
             Installed = $true
             Running   = $true
@@ -63,9 +152,25 @@ function Start-AltServer {
         }
     }
 
-    Write-Host "[altserver] Starting AltServer: $path"
+    $reason = Get-AltServerUnhealthyReason
+    $hadProcess = @(Get-AltServerProcess).Count -gt 0
+    if ($hadProcess) {
+        Write-Host ("[altserver] {0} — stopping and relaunching so the tray icon appears." -f $reason) -ForegroundColor Yellow
+        if (-not (Stop-AltServer)) {
+            Write-Warning '[altserver] Could not exit the existing AltServer process(es).'
+            return [pscustomobject]@{
+                Installed = $true
+                Running   = $false
+                Path      = $path
+                Started   = $false
+            }
+        }
+    }
+
+    Write-Host "[altserver] Starting AltServer on this desktop (interactive): $path"
+    $how = $null
     try {
-        Start-Process -FilePath $path | Out-Null
+        $how = Start-AltServerInteractive -FilePath $path
     } catch {
         Write-Warning "[altserver] Start failed: $($_.Exception.Message)"
         return [pscustomobject]@{
@@ -75,17 +180,23 @@ function Start-AltServer {
             Started   = $false
         }
     }
+    Write-Host ("[altserver] Launch method: {0}" -f $how) -ForegroundColor DarkGray
 
-    $deadline = [datetime]::UtcNow.AddSeconds([Math]::Max(1, $WaitSeconds))
+    $deadline = [datetime]::UtcNow.AddSeconds([Math]::Max(2, $WaitSeconds))
     while ([datetime]::UtcNow -lt $deadline) {
         if (Test-AltServerRunning) { break }
         Start-Sleep -Milliseconds 400
     }
     $running = Test-AltServerRunning
     if ($running) {
-        Write-Host '[altserver] Started OK'
+        Write-Host '[altserver] Started OK. Tray icon may be in the notification area or hidden-icons overflow (^).'
     } else {
-        Write-Warning '[altserver] Process not seen yet; continuing anyway'
+        $left = @(Get-AltServerProcess).Count
+        if ($left -gt 0) {
+            Write-Warning ("[altserver] Process present but not usable ({0})." -f (Get-AltServerUnhealthyReason))
+        } else {
+            Write-Warning '[altserver] Process not seen yet; continuing anyway'
+        }
     }
     return [pscustomobject]@{
         Installed = $true
@@ -117,7 +228,7 @@ function Write-AltServerNotice {
     $running = Test-AltServerRunning
     $started = $false
     if ($EnsureStarted -and -not $running) {
-        $startResult = Start-AltServer -WaitSeconds 4
+        $startResult = Start-AltServer -WaitSeconds 10
         $running = [bool]$startResult.Running
         $started = [bool]$startResult.Started
     }
@@ -125,12 +236,17 @@ function Write-AltServerNotice {
     if ($AlwaysStatus) {
         if ($running) {
             if ($started) {
-                Write-Host "[altserver] Started: $path"
+                Write-Host "[altserver] Started (tray): $path"
             } else {
-                Write-Host "[altserver] Running: $path"
+                Write-Host "[altserver] Running (tray): $path"
             }
+            Write-Host '[altserver] If the icon is missing, check the hidden-icons overflow (^).' -ForegroundColor DarkGray
         } else {
-            Write-Host "[altserver] Installed but not running: $path" -ForegroundColor DarkYellow
+            $reason = Get-AltServerUnhealthyReason
+            Write-Host ("[altserver] Installed but not usable: {0}" -f $path) -ForegroundColor DarkYellow
+            if ($reason) {
+                Write-Host ("[altserver] {0}" -f $reason) -ForegroundColor DarkYellow
+            }
             Write-Host '[altserver] Needed for AltStore refresh (free / Personal Team installs expire in ~7 days).' -ForegroundColor DarkYellow
         }
     }

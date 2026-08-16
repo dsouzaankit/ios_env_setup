@@ -22,3 +22,5 @@ pwsh -File .\altserver_refresh_scripts\Invoke-AltServerPhoneSubnetIfNeeded.ps1
 ```
 
 Direct runs wait for Enter. Child callers: `-NoWaitEnter`. See `altserver_refresh_scripts/README.md`.
+
+AltStore IPA neighbors (`ios_3d_loop_segments\deploy.ps1`, `web_auto_parking\deploy.ps1`) dot-source `altserver_refresh_scripts\Join-AltStoreDeployPrep.ps1` so deploy starts AltServer and checks the phone subnet. Pythonista zip deploys do not.

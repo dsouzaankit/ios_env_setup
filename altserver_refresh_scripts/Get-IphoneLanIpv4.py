@@ -2,12 +2,15 @@
 """Print the USB-connected iPhone's current LAN IPv4.
 
 Uses pymobiledevice3 over USB to identify the phone, then USB
-``com.apple.pcapd`` on en0 (~8s) to read IPv4 from Wi-Fi packet headers.
-Works across subnets; no admin tunneld. Does not use Bonjour/mobdev2
-(mDNS is often empty on the same subnet — Clash TUN, leftover WFP, IPv6-only
-ads). Does not call SetWiFiPowerState.
+``com.apple.pcapd`` on en0 (up to two captures; second window is longer if the
+first saw no packets). Idle associated radios often emit nothing in the first
+8s. A window that only shows the AP (``.1`` / ``.254``) is not the phone;
+a second capture and ARP dest-host hints are used. Works across subnets; no
+admin tunneld. Does not use Bonjour/mobdev2 (mDNS is often empty on the same
+subnet — Clash TUN, leftover WFP, IPv6-only ads). Does not call SetWiFiPowerState.
 
-Stdout (success): JSON {"ok": true, "ip": "10.0.100.10", "source": "usb-pcapd", ...}
+Stdout: JSON {"ok": true, "ip": "10.0.100.10", "source": "usb-pcapd", ...}
+On miss, still emits JSON (ok=false) with optional gatewayHint (AP IPv4).
 Exit:
   0  got IPv4
   2  no USB iPhone
@@ -151,6 +154,11 @@ def _is_wifi_iface(name: str, unit: int) -> bool:
 def _mac_bytes(value: Any) -> bytes | None:
     if isinstance(value, (bytes, bytearray)) and len(value) >= 6:
         return bytes(value[:6])
+    if isinstance(value, (list, tuple)) and len(value) >= 6:
+        try:
+            return bytes(int(x) & 0xFF for x in value[:6])
+        except (TypeError, ValueError):
+            return None
     if isinstance(value, str):
         hexish = value.replace(":", "").replace("-", "").replace(".", "").strip()
         if len(hexish) == 12:
@@ -159,6 +167,12 @@ def _mac_bytes(value: Any) -> bytes | None:
             except ValueError:
                 return None
     return None
+
+
+def _as_phone_ip(ip: str | None) -> str | None:
+    if not ip or not _is_lan_unicast(ip) or _is_likely_router_ip(ip):
+        return None
+    return ip
 
 
 def _parse_ipv4_header(iph: bytes) -> tuple[str, str] | None:
@@ -220,21 +234,33 @@ def _hints_from_frame(data: bytes) -> list[tuple[str, str, bytes | None]]:
 
 
 def _pick_phone_ip(src_private: Counter[str], src_to_public: Counter[str], dst_private: Counter[str]) -> str | None:
+    """Never returns .1/.254 — those are the AP, not the phone."""
     def _hosts(counter: Counter[str]) -> list[str]:
-        return [ip for ip in counter if not _is_likely_router_ip(ip)]
+        return [ip for ip in counter if _as_phone_ip(ip)]
 
-    if src_to_public:
-        pool = _hosts(src_to_public) or list(src_to_public)
-        return max(pool, key=lambda ip: src_to_public[ip])
+    host_public = _hosts(src_to_public)
+    if host_public:
+        return max(host_public, key=lambda ip: src_to_public[ip])
     both = [ip for ip in src_private if ip in dst_private]
-    host_both = [ip for ip in both if not _is_likely_router_ip(ip)]
+    host_both = [ip for ip in both if _as_phone_ip(ip)]
     host_src = _hosts(src_private)
     host_dst = _hosts(dst_private)
-    pool = host_both or host_src or host_dst or both or list(src_private) or list(dst_private)
+    pool = host_both or host_src or host_dst
     if not pool:
         return None
     counts = src_private if src_private else dst_private
     return max(pool, key=lambda ip: counts[ip])
+
+
+def _pick_gateway_hint(*counters: Counter[str]) -> str | None:
+    seen: Counter[str] = Counter()
+    for counter in counters:
+        for ip, n in counter.items():
+            if _is_likely_router_ip(ip):
+                seen[ip] += n
+    if not seen:
+        return None
+    return seen.most_common(1)[0][0]
 
 
 def _summarize_wifi_assoc(raw: Any) -> dict[str, Any]:
@@ -260,6 +286,12 @@ def _summarize_wifi_assoc(raw: Any) -> dict[str, Any]:
     return info
 
 
+def _best_mac_src(mac_src: Counter[str]) -> str | None:
+    if not mac_src:
+        return None
+    return _as_phone_ip(mac_src.most_common(1)[0][0])
+
+
 async def _usb_wifi_probe(udid: str, capture_sec: float = 8.0) -> tuple[str | None, dict[str, Any], str]:
     """Return (ipv4 or None, assoc info, error/status). USB only; no Bonjour."""
     try:
@@ -270,7 +302,8 @@ async def _usb_wifi_probe(udid: str, capture_sec: float = 8.0) -> tuple[str | No
         return None, {}, f"pymobiledevice3 missing: {exc}"
 
     assoc: dict[str, Any] = {}
-    pcap_note = ""
+    notes: list[str] = []
+    gateway_hint: str | None = None
 
     async with await create_using_usbmux(
         serial=udid or None,
@@ -283,76 +316,127 @@ async def _usb_wifi_probe(udid: str, capture_sec: float = 8.0) -> tuple[str | No
             assoc = {"associated": None, "error": f"{type(exc).__name__}: {exc}"[:180]}
 
         phone_mac = assoc.get("mac") if isinstance(assoc.get("mac"), (bytes, bytearray)) else None
+        ip: str | None = None
         src_private: Counter[str] = Counter()
         src_to_public: Counter[str] = Counter()
         dst_private: Counter[str] = Counter()
-        mac_src: Counter[str] = Counter()
         wifi_packets = 0
         total_packets = 0
 
-        try:
-            _log(f"USB pcapd capture up to {int(capture_sec)}s...")
-            async with PcapdService(lockdown=lockdown) as pcap:
+        for attempt in range(1, 3):
+            src_private = Counter()
+            src_to_public = Counter()
+            dst_private = Counter()
+            mac_src: Counter[str] = Counter()
+            wifi_packets = 0
+            total_packets = 0
+            pcap_note = ""
 
-                async def _capture() -> str | None:
-                    nonlocal wifi_packets, total_packets
-                    async for pkt in pcap.watch(packets_count=120):
-                        total_packets += 1
-                        name = str(getattr(pkt, "interface_name", "") or "")
-                        unit = int(getattr(pkt, "unit", 0) or 0)
-                        if not _is_wifi_iface(name, unit):
-                            if mac_src or (src_to_public and wifi_packets >= 4):
-                                return (mac_src.most_common(1)[0][0] if mac_src else None) or _pick_phone_ip(
+            try:
+                _log(f"USB pcapd capture up to {int(capture_sec)}s (attempt {attempt}/2)...")
+                async with PcapdService(lockdown=lockdown) as pcap:
+
+                    async def _capture() -> str | None:
+                        nonlocal wifi_packets, total_packets
+                        async for pkt in pcap.watch(packets_count=-1):
+                            total_packets += 1
+                            name = str(getattr(pkt, "interface_name", "") or "")
+                            unit = int(getattr(pkt, "unit", 0) or 0)
+                            if not _is_wifi_iface(name, unit):
+                                best = _best_mac_src(mac_src) or _pick_phone_ip(
                                     src_private, src_to_public, dst_private
                                 )
-                            continue
-                        hints = _hints_from_frame(bytes(pkt.data or b""))
-                        if not hints:
-                            continue
-                        wifi_packets += 1
-                        for src, dst, src_mac in hints:
-                            mac_known = bool(phone_mac and src_mac)
-                            if mac_known and src_mac == phone_mac and _is_lan_unicast(src):
-                                mac_src[src] += 1
-                                return src
-                            if mac_known and src_mac != phone_mac:
-                                # Another station (often the AP). ARP target may be the phone.
+                                if best and (mac_src or wifi_packets >= 4):
+                                    return best
+                                continue
+                            hints = _hints_from_frame(bytes(pkt.data or b""))
+                            if not hints:
+                                continue
+                            wifi_packets += 1
+                            for src, dst, src_mac in hints:
+                                mac_known = bool(phone_mac and src_mac)
+                                if mac_known and src_mac == phone_mac:
+                                    if _as_phone_ip(src):
+                                        mac_src[src] += 1
+                                        return src
+                                    continue
+                                if mac_known and src_mac != phone_mac:
+                                    # Another station (often the AP). ARP target may be the phone.
+                                    if _as_phone_ip(dst):
+                                        dst_private[dst] += 1
+                                    elif _is_likely_router_ip(dst):
+                                        dst_private[dst] += 1
+                                    if _is_likely_router_ip(src):
+                                        src_private[src] += 1
+                                    continue
+                                if _is_lan_unicast(src):
+                                    src_private[src] += 1
+                                    if _is_public_unicast(dst):
+                                        src_to_public[src] += 1
                                 if _is_lan_unicast(dst):
                                     dst_private[dst] += 1
+                            best = _best_mac_src(mac_src)
+                            if best:
+                                return best
+                            chosen = _pick_phone_ip(src_private, src_to_public, dst_private)
+                            if not chosen:
                                 continue
-                            if _is_lan_unicast(src):
-                                src_private[src] += 1
-                                if _is_public_unicast(dst):
-                                    src_to_public[src] += 1
-                            if _is_lan_unicast(dst):
-                                dst_private[dst] += 1
-                        if mac_src:
-                            return mac_src.most_common(1)[0][0]
-                        chosen = _pick_phone_ip(src_private, src_to_public, dst_private)
-                        if chosen and not phone_mac and (src_to_public[chosen] >= 2 or wifi_packets >= 8):
-                            return chosen
-                    if mac_src:
-                        return mac_src.most_common(1)[0][0]
-                    return _pick_phone_ip(src_private, src_to_public, dst_private)
+                            if phone_mac:
+                                if wifi_packets >= 4:
+                                    return chosen
+                            elif src_to_public[chosen] >= 2 or wifi_packets >= 8:
+                                return chosen
+                        return _best_mac_src(mac_src) or _pick_phone_ip(
+                            src_private, src_to_public, dst_private
+                        )
 
-                ip = await asyncio.wait_for(_capture(), timeout=capture_sec)
-        except TimeoutError:
-            ip = (mac_src.most_common(1)[0][0] if mac_src else None) or _pick_phone_ip(
-                src_private, src_to_public, dst_private
-            )
-            pcap_note = f"pcapd timeout after {total_packets} packets ({wifi_packets} on en0)"
-        except Exception as exc:
-            return (
-                None,
-                assoc,
-                f"pcapd failed ({type(exc).__name__}: {str(exc)[:180]})",
-            )
+                    ip = _as_phone_ip(await asyncio.wait_for(_capture(), timeout=capture_sec))
+            except TimeoutError:
+                ip = _best_mac_src(mac_src) or _pick_phone_ip(
+                    src_private, src_to_public, dst_private
+                )
+                pcap_note = (
+                    f"pcapd timeout after {total_packets} packets "
+                    f"({wifi_packets} on en0) attempt {attempt}/2"
+                )
+            except Exception as exc:
+                assoc["gatewayHint"] = gateway_hint
+                return (
+                    None,
+                    assoc,
+                    f"pcapd failed ({type(exc).__name__}: {str(exc)[:180]})",
+                )
 
+            gw = _pick_gateway_hint(src_private, dst_private, src_to_public)
+            if gw:
+                gateway_hint = gateway_hint or gw
+            if pcap_note:
+                notes.append(pcap_note)
+            if ip:
+                break
+            if attempt == 1:
+                associated = assoc.get("associated") is True
+                radio_down = assoc.get("associated") is False
+                if radio_down and total_packets == 0:
+                    notes.append("wifi not associated; not retrying an empty capture")
+                    break
+                if total_packets == 0:
+                    _log("pcapd attempt 1 saw 0 packets; retrying with a longer window...")
+                    capture_sec = max(float(capture_sec), 16.0)
+                elif associated or gateway_hint or src_private or dst_private:
+                    _log("pcapd attempt 1 had no phone host IP; retrying...")
+                else:
+                    _log("pcapd attempt 1 empty; retrying...")
+                await asyncio.sleep(1.5)
+
+    assoc["gatewayHint"] = gateway_hint
     if ip:
-        return ip, assoc, pcap_note
-    bits = [pcap_note or f"pcapd saw {total_packets} packets ({wifi_packets} on en0)"]
-    if not src_private:
+        return ip, assoc, "; ".join(notes)
+    bits = notes or [f"pcapd saw {total_packets} packets ({wifi_packets} on en0)"]
+    if not src_private and not dst_private:
         bits.append("no private IPv4 on Wi-Fi frames")
+    elif gateway_hint:
+        bits.append(f"saw AP {gateway_hint} but no phone host IP")
     return None, assoc, "; ".join(b for b in bits if b)
 
 
@@ -396,26 +480,30 @@ def main() -> int:
 
     phone = phones[0]
     _log(f"USB iPhone: {phone.get('name') or phone.get('udid') or '?'}")
-    _log("USB pcapd on en0 (~8s)...")
+    _log("USB pcapd on en0 (up to two ~8s captures)...")
     usb_ip, assoc, usb_note = _usb_wifi_ipv4(phone.get("udid") or "")
+    gw = assoc.get("gatewayHint") if isinstance(assoc.get("gatewayHint"), str) else None
+    payload = {
+        "ok": bool(usb_ip),
+        "ip": usb_ip,
+        "deviceName": phone["name"],
+        "udid": phone["udid"],
+        "source": "usb-pcapd",
+        "wifiLockdownJustSet": False,
+        "wifiPowerJustSet": False,
+        "wifiAssociated": assoc.get("associated"),
+    }
+    if gw:
+        payload["gatewayHint"] = gw
+    print(json.dumps(payload, ensure_ascii=True))
     if usb_ip:
-        payload = {
-            "ok": True,
-            "ip": usb_ip,
-            "deviceName": phone["name"],
-            "udid": phone["udid"],
-            "source": "usb-pcapd",
-            "wifiLockdownJustSet": False,
-            "wifiPowerJustSet": False,
-            "wifiAssociated": assoc.get("associated"),
-        }
-        print(json.dumps(payload, ensure_ascii=True))
         return 0
 
     print(
         "NO_WIFI_IP: USB iPhone present but no Wi-Fi IPv4 from pcapd "
         f"(usb={phone.get('name')}; {_assoc_brief(assoc)}"
-        f"{'; ' + usb_note if usb_note else ''}).",
+        f"{'; ' + usb_note if usb_note else ''}"
+        f"{'; AP ' + gw if gw else ''}).",
         file=sys.stderr,
         flush=True,
     )
