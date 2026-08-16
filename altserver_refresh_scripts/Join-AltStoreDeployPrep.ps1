@@ -5,7 +5,7 @@
 
 .DESCRIPTION
   Invoke-AltStoreDeployPrep starts AltServer (tray / interactive desktop) and
-  runs the USB pcapd phone-subnet check. Missing USB / no Wi-Fi IP only warns —
+  runs the USB pcapd phone-subnet check. Missing USB / no Wi-Fi IP only warns -
   iCloud AltStore install can still proceed. Sideload needs AltServer + same subnet.
 
   Safe to call from Windows PowerShell 5.1 deploy.ps1 with $ErrorActionPreference
@@ -100,7 +100,7 @@ function Invoke-AltStoreDeployPrep {
 
     $pwsh = Get-IosAltStorePrepPwsh
     if (-not $pwsh) {
-        Write-Warning '[altserver] pwsh (PowerShell 7) not found — skip AltStore prep. Install https://aka.ms/powershell'
+        Write-Warning '[altserver] pwsh (PowerShell 7) not found - skip AltStore prep. Install https://aka.ms/powershell'
         return
     }
 
@@ -109,7 +109,7 @@ function Invoke-AltStoreDeployPrep {
     if ($altCode -eq 0) {
         Write-Host '[altserver] AltServer is usable (tray / this desktop).'
     } elseif ($altCode -eq 2) {
-        Write-Host '[altserver] AltServer is not installed — iCloud AltStore install still works.' -ForegroundColor DarkYellow
+        Write-Host '[altserver] AltServer is not installed - iCloud AltStore install still works.' -ForegroundColor DarkYellow
     } else {
         Write-Warning ("[altserver] Tray start did not confirm usable (exit {0}). Check the notification area / hidden icons (^)." -f $altCode)
     }

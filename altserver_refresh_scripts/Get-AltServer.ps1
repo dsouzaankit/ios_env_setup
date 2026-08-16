@@ -155,7 +155,7 @@ function Start-AltServer {
     $reason = Get-AltServerUnhealthyReason
     $hadProcess = @(Get-AltServerProcess).Count -gt 0
     if ($hadProcess) {
-        Write-Host ("[altserver] {0} — stopping and relaunching so the tray icon appears." -f $reason) -ForegroundColor Yellow
+        Write-Host ("[altserver] {0} - stopping and relaunching so the tray icon appears." -f $reason) -ForegroundColor Yellow
         if (-not (Stop-AltServer)) {
             Write-Warning '[altserver] Could not exit the existing AltServer process(es).'
             return [pscustomobject]@{

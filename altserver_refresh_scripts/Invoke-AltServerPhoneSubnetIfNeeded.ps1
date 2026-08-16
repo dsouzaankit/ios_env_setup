@@ -6,7 +6,7 @@
 
 .DESCRIPTION
   Uses pymobiledevice3 (USB identify, then USB pcapd on en0) for the phone LAN IP.
-  Compares it to this PC's LAN IPv4(s) — AltServer binds those interfaces.
+  Compares it to this PC's LAN IPv4(s) - AltServer binds those interfaces.
 
   If subnets differ, infers telnet_reboot_wlan_*.py from
   P:\all_scripts\5g_router_reboot (wifi_dx_common_*.py ROUTER_IP on the phone's
@@ -403,7 +403,7 @@ try {
             $lastKnownIp = [string]$probe.Ip
             $match = Test-PhoneOnPcSubnet -PhoneIp $probe.Ip -PcLans $pcLans -PrefixOverride $PrefixLength
             if ($match) {
-                Write-Host ('[altserver-subnet] OK — phone {0} shares subnet with PC/AltServer {1}/{2} ({3}).' -f `
+                Write-Host ('[altserver-subnet] OK - phone {0} shares subnet with PC/AltServer {1}/{2} ({3}).' -f `
                     $probe.Ip, $match.Ip, $match.PrefixLength, $match.Adapter) -ForegroundColor Green
                 Exit-WithEnter 0
             }
@@ -437,7 +437,7 @@ try {
             Write-Warning @"
 [altserver-subnet] No matching reboot script under $RebootScriptsRoot
 (need wifi_dx_common_*.py ROUTER_IP on the phone's current subnet -> telnet_reboot_wlan_*.py).
-Phone IP: $(if ($ipForAp) { $ipForAp } else { '(unknown — cannot infer AP)' })
+Phone IP: $(if ($ipForAp) { $ipForAp } else { '(unknown - cannot infer AP)' })
 "@
             # Let Loop Segments recover fall back to LAN-page wait + off-subnet reboots.
             Exit-WithEnter 4
@@ -485,7 +485,7 @@ Phone IP: $(if ($ipForAp) { $ipForAp } else { '(unknown — cannot infer AP)' })
             Write-Host ('[altserver-subnet] Probe IP={0} changed={1} onPcSubnet={2} sameOffSubnet={3}' -f `
                 $probe.Ip, $changed, [bool]$match, $stillOnOldAp)
             if ($match) {
-                Write-Host ('[altserver-subnet] OK — phone {0} now shares subnet with PC/AltServer {1}.' -f $probe.Ip, $match.Ip) -ForegroundColor Green
+                Write-Host ('[altserver-subnet] OK - phone {0} now shares subnet with PC/AltServer {1}.' -f $probe.Ip, $match.Ip) -ForegroundColor Green
                 Exit-WithEnter 0
             }
             if ($stillOnOldAp) {
@@ -507,7 +507,7 @@ Join the PC/AltServer Wi-Fi ($pcHint) or forget the other network on the phone.
             Exit-WithEnter 1
         }
         if (-not $gotFresh) {
-            Write-Warning '[altserver-subnet] Timed out waiting for a new phone IP — re-checking.'
+            Write-Warning '[altserver-subnet] Timed out waiting for a new phone IP - re-checking.'
         }
         $probe = Resolve-PhoneProbe (Get-IphoneLanIpv4 -PyExe $py)
         Show-PhoneProbe $probe
