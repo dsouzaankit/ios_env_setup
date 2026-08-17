@@ -18,8 +18,8 @@
 
 .EXAMPLE
   $join = @(
-      (Join-Path $ProjectRoot 'env_setup\altserver_refresh_scripts\Join-AltStoreDeployPrep.ps1')
-      'P:\all_scripts\iOS apps\env_setup\altserver_refresh_scripts\Join-AltStoreDeployPrep.ps1'
+      (Join-Path $ProjectRoot 'env_setup\altserver_refresh\Join-AltStoreDeployPrep.ps1')
+      'P:\all_scripts\iOS apps\env_setup\altserver_refresh\Join-AltStoreDeployPrep.ps1'
   ) | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
   if ($join) { . $join; Invoke-AltStoreDeployPrep }
   # Optional: Invoke-AltStoreDeployPrep -CheckPhoneSubnet

@@ -46,8 +46,8 @@ Loop Segments companion/rclone call `windows\lan\Invoke-LoopSegmentsPhoneLanReco
 
 ```powershell
 $join = @(
-    (Join-Path $ProjectRoot 'env_setup\altserver_refresh_scripts\Join-AltStoreDeployPrep.ps1')
-    'P:\all_scripts\iOS apps\env_setup\altserver_refresh_scripts\Join-AltStoreDeployPrep.ps1'
+    (Join-Path $ProjectRoot 'env_setup\altserver_refresh\Join-AltStoreDeployPrep.ps1')
+    'P:\all_scripts\iOS apps\env_setup\altserver_refresh\Join-AltStoreDeployPrep.ps1'
 ) | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
 if ($join) { . $join; Invoke-AltStoreDeployPrep }
 # Optional: Invoke-AltStoreDeployPrep -CheckPhoneSubnet
@@ -101,7 +101,7 @@ Get-Content .\iphone-usb-altserver.log -Tail 15
 
 **Running** plus both `wscript` and a Watch `pwsh` means the hidden watcher is up. **Ready** with no Watch `pwsh` means it is not. **Ready** with a leftover Watch `pwsh` is an orphan (re-run Register so the task owns the process). Plug/unplug USB: a new `==== USB connect` line in the log is the functional check.
 
-`-ShowWindow` keeps a console; `-SkipPhoneSubnet` only ensures AltServer. Log: `altserver_refresh_scripts\iphone-usb-altserver.log` (gitignored; keeps the last **5** USB-connect sessions). Unlock and Trust This Computer or usbmux is empty (retries a few times). Off-subnet still runs **WifiRestart** on that plug-in.
+`-ShowWindow` keeps a console; `-SkipPhoneSubnet` only ensures AltServer. Log: `altserver_refresh\iphone-usb-altserver.log` (gitignored; keeps the last **5** USB-connect sessions). Unlock and Trust This Computer or usbmux is empty (retries a few times). Off-subnet still runs **WifiRestart** on that plug-in.
 
 Each USB plug-in also runs `Clash\Remove-MihomoMulticastRoute.ps1` via scheduled task `IosEnv-Clash-RemoveMihomoMulticast` (**Run with highest privileges**, no UAC per cable). Re-run `Register-IphoneUsbAltServer.ps1` once to create that task.
 

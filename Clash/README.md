@@ -25,7 +25,7 @@ On-link delete (gateway is `0.0.0.0`, index is not always 40):
 pwsh -File .\Remove-MihomoMulticastRoute.ps1
 ```
 
-Run **elevated** after enabling TUN, or register `IosEnv-Clash-RemoveMihomoMulticast` via `altserver_refresh_scripts\Register-IphoneUsbAltServer.ps1` (USB plug-in starts that task with highest privileges, no UAC per cable). Loop Segments companion can UAC-launch **only this script** and stay unelevated. Clash may re-add the route the next time TUN comes up.
+Run **elevated** after enabling TUN, or register `IosEnv-Clash-RemoveMihomoMulticast` via `altserver_refresh\Register-IphoneUsbAltServer.ps1` (USB plug-in starts that task with highest privileges, no UAC per cable). Loop Segments companion can UAC-launch **only this script** and stay unelevated. Clash may re-add the route the next time TUN comes up.
 
 ## Profiles
 

@@ -16,4 +16,4 @@ Clash/profiles/
 Clash/*.exe
 
 # USB watcher runtime log
-altserver_refresh_scripts/iphone-usb-altserver.log
+altserver_refresh/iphone-usb-altserver.log
