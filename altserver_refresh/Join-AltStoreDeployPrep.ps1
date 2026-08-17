@@ -8,8 +8,10 @@
   clears Clash TUN multicast so AltStore can see AltServer. It does **not** run
   the USB pcapd phone-subnet check by default — Watch-IphoneUsbAltServer already
   does that on plug-in. Pass -CheckPhoneSubnet to run it here. Missing USB /
-  no Wi-Fi IP only warns - iCloud AltStore install can still proceed. Sideload
-  needs AltServer + same subnet (USB connect, or -CheckPhoneSubnet).
+  no Wi-Fi IP only warns - iCloud AltStore install can still proceed. USB
+  AltStore Refresh All works even with multiple gateways (same subnet is for
+  Wi-Fi background refresh / Loop Segments LAN). Pass -CheckPhoneSubnet only
+  if you want pcapd here instead of waiting for USB plug-in.
 
   Safe to call from Windows PowerShell 5.1 deploy.ps1 with $ErrorActionPreference
   Stop: AltServer start and Clash multicast run in a child pwsh so a 5.1 parse

@@ -74,7 +74,7 @@ pwsh -File .\Register-IphoneUsbAltServer.ps1 -Unregister   # UsbWatch + Clash mu
 
 ## Run on iPhone USB plug-in
 
-`Watch-IphoneUsbAltServer.ps1` polls PnP for Apple USB. On each **plug-in** (not while the cable stays in) it starts AltServer and runs the phone-subnet check. It does **not** tap AltStore Refresh All.
+`Watch-IphoneUsbAltServer.ps1` polls PnP for Apple USB. On each **plug-in** (not while the cable stays in) it starts AltServer and runs the phone-subnet check (WifiRestart if the phone Wi-Fi is off this PC's subnet — useful for Loop Segments LAN / Wi-Fi AltServer). It does **not** tap AltStore Refresh All. **USB Refresh All** still works when the phone and PC are on different gateways; you tap it in AltStore with the cable in.
 
 One-shot test (phone already plugged in):
 
