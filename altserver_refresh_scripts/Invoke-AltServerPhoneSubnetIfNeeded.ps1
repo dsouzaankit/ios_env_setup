@@ -11,8 +11,8 @@
   If subnets differ, infers telnet_reboot_wlan_*.py from
   P:\all_scripts\5g_router_reboot (wifi_dx_common_*.py ROUTER_IP on the phone's
   current subnet), runs that AP's WifiRestart (not a full reboot), waits briefly
-  for a new phone IP, and checks again. Stops early if the phone is back on the
-  same off-subnet SSID.
+  for a new phone IP, and checks again. Same off-subnet after a bounce stops that
+  wait early and retries the AP (up to MaxRounds), matching the PC gateway loop.
 
   Direct run waits for Enter. Pass -NoWaitEnter when invoked as a child.
 
@@ -25,11 +25,11 @@ param(
     [int] $PrefixLength = 0,
     [ValidateRange(2, 60)]
     [int] $PollSec = 5,
-    # WifiRestart (not a full router reboot) is typically back in <20s. 40s fits
-    # one USB pcapd probe (~8s) or an AP-only first window + retry (~17s) after
-    # a short settle; loop also stops on the first same-off-subnet IP.
+    # WifiRestart script is ~10s (telnet + device sleep 5). 20s after that fits
+    # one USB pcapd probe (~8s) plus PollSec; same off-subnet stops the wait
+    # early, then the next round WifiRestarts that AP again.
     [ValidateRange(15, 3600)]
-    [int] $WaitPhoneIpSec = 40,
+    [int] $WaitPhoneIpSec = 20,
     [ValidateRange(1, 20)]
     [int] $MaxRounds = 3,
     [switch] $SkipReboot,
@@ -461,7 +461,7 @@ Phone IP: $(if ($ipForAp) { $ipForAp } else { '(unknown - cannot infer AP)' })
 
         $previousIp = if ($probe.Ip) { $probe.Ip } elseif ($lastKnownIp) { $lastKnownIp } else { '' }
         $pcHint = @($pcLans | ForEach-Object { '{0}/{1}' -f $_.Ip, $_.PrefixLength }) -join ', '
-        Write-Host ('[altserver-subnet] Waiting up to {0}s after WifiRestart for the phone to leave {1} and join a PC/AltServer subnet ({2}); each poll is USB pcapd (~8s). Stops early if it rejoins the same off-subnet.' -f `
+        Write-Host ('[altserver-subnet] Waiting up to {0}s after WifiRestart for the phone to leave {1} and join a PC/AltServer subnet ({2}); each poll is USB pcapd (~8s). Same off-subnet stops this wait early, then the next round can bounce that AP again.' -f `
             $WaitPhoneIpSec, $(if ($previousIp) { $previousIp } else { '(no ip)' }), $pcHint)
         $deadline = [datetime]::UtcNow.AddSeconds($WaitPhoneIpSec)
         $gotFresh = $false
@@ -501,10 +501,8 @@ Phone IP: $(if ($ipForAp) { $ipForAp } else { '(unknown - cannot infer AP)' })
         if ($rejoinedSameAp) {
             Write-Host @"
 [altserver-subnet] Phone stayed on $($probe.Ip) after WifiRestart of $($target.RouterIp) ($($target.Model)).
-iOS rejoined that SSID (DHCP may change, e.g. .95 -> .29). Another reboot of the same AP will not move it.
-Join the PC/AltServer Wi-Fi ($pcHint) or forget the other network on the phone.
+iOS rejoined that SSID (DHCP may change, e.g. .95 -> .29). Stopping this wait and retrying that AP.
 "@ -ForegroundColor Yellow
-            Exit-WithEnter 1
         }
         if (-not $gotFresh) {
             Write-Warning '[altserver-subnet] Timed out waiting for a new phone IP - re-checking.'
