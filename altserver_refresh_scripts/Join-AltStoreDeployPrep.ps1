@@ -5,12 +5,16 @@
 
 .DESCRIPTION
   Invoke-AltStoreDeployPrep starts AltServer (tray / interactive desktop) and
-  runs the USB pcapd phone-subnet check. Missing USB / no Wi-Fi IP only warns -
-  iCloud AltStore install can still proceed. Sideload needs AltServer + same subnet.
+  clears Clash TUN multicast so AltStore can see AltServer. It does **not** run
+  the USB pcapd phone-subnet check by default — Watch-IphoneUsbAltServer already
+  does that on plug-in. Pass -CheckPhoneSubnet to run it here. Missing USB /
+  no Wi-Fi IP only warns - iCloud AltStore install can still proceed. Sideload
+  needs AltServer + same subnet (USB connect, or -CheckPhoneSubnet).
 
   Safe to call from Windows PowerShell 5.1 deploy.ps1 with $ErrorActionPreference
-  Stop: AltServer start and subnet checks run in a child pwsh so a 5.1 parse
-  error cannot abort the IPA copy.
+  Stop: AltServer start and Clash multicast run in a child pwsh so a 5.1 parse
+  error cannot abort the IPA copy. Phone-subnet check is USB plug-in unless
+  -CheckPhoneSubnet.
 
 .EXAMPLE
   $join = @(
@@ -18,6 +22,7 @@
       'P:\all_scripts\iOS apps\env_setup\altserver_refresh_scripts\Join-AltStoreDeployPrep.ps1'
   ) | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
   if ($join) { . $join; Invoke-AltStoreDeployPrep }
+  # Optional: Invoke-AltStoreDeployPrep -CheckPhoneSubnet
 #>
 
 # $PSScriptRoot is this file when dotted (PS 3+). $MyInvocation.MyCommand.Path
@@ -135,10 +140,11 @@ function Invoke-IosAltStoreClashMdns {
 
 function Invoke-AltStoreDeployPrep {
     param(
-        [switch] $SkipPhoneSubnet
+        [switch] $SkipPhoneSubnet,
+        [switch] $CheckPhoneSubnet
     )
 
-    Write-Host '==> AltStore deploy prep (AltServer tray + phone subnet)'
+    Write-Host '==> AltStore deploy prep (AltServer tray; subnet is USB plug-in)'
     $dir = $script:IosAltRefreshDir
     $ifNeeded = Join-Path $dir 'Invoke-AltServerIfNeeded.ps1'
     $subnet = Join-Path $dir 'Invoke-AltServerPhoneSubnetIfNeeded.ps1'
@@ -165,8 +171,13 @@ function Invoke-AltStoreDeployPrep {
 
     Invoke-IosAltStoreClashMdns
 
-    if ($SkipPhoneSubnet) {
-        Write-Host '[altserver] Skipping phone-subnet check (-SkipPhoneSubnet).'
+    $wantSubnet = $CheckPhoneSubnet -and -not $SkipPhoneSubnet
+    if (-not $wantSubnet) {
+        if ($SkipPhoneSubnet) {
+            Write-Host '[altserver] Skipping phone-subnet check (-SkipPhoneSubnet).'
+        } else {
+            Write-Host '[altserver] Skipping phone-subnet check (USB plug-in already does this; -CheckPhoneSubnet to run).'
+        }
         return
     }
     if (-not (Test-Path -LiteralPath $subnet)) {

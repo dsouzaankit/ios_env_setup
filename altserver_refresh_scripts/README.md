@@ -39,7 +39,7 @@ Loop Segments companion/rclone call `windows\lan\Invoke-LoopSegmentsPhoneLanReco
 
 ## AltStore IPA deploy (neighbor apps)
 
-`Join-AltStoreDeployPrep.ps1` (dot-source) starts AltServer and runs the phone-subnet check. Missing USB only warns. Used by:
+`Join-AltStoreDeployPrep.ps1` (dot-source) starts AltServer and clears Clash multicast. It does **not** run the phone-subnet check (USB plug-in already does that). Pass `-CheckPhoneSubnet` to run pcapd here. Missing USB only warns. Used by:
 
 - `ios_3d_loop_segments\deploy.ps1` / `copy-to-icloud.ps1`
 - `web_auto_parking\deploy.ps1`
@@ -50,6 +50,7 @@ $join = @(
     'P:\all_scripts\iOS apps\env_setup\altserver_refresh_scripts\Join-AltStoreDeployPrep.ps1'
 ) | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
 if ($join) { . $join; Invoke-AltStoreDeployPrep }
+# Optional: Invoke-AltStoreDeployPrep -CheckPhoneSubnet
 ```
 
 `-SkipAltStorePrep` on those deploy scripts skips this. Pythonista zip deploys (`bike_train_transit`, `quick_open_apps`, `iOS-SOCKS-Server`) do not use AltStore.

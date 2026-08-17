@@ -25,4 +25,4 @@ Direct runs wait for Enter. Child callers: `-NoWaitEnter`. See `altserver_refres
 
 To run those helpers on each iPhone USB plug-in: `pwsh -File .\altserver_refresh_scripts\Register-IphoneUsbAltServer.ps1` (creates `IosEnv-AltServer-UsbWatch` + `IosEnv-Clash-RemoveMihomoMulticast`; AltServer tray start uses `IosEnv-AltServer-TrayKick`). Task list: `altserver_refresh_scripts/README.md` (Scheduled tasks).
 
-AltStore IPA neighbors (`ios_3d_loop_segments\deploy.ps1`, `web_auto_parking\deploy.ps1`) dot-source `altserver_refresh_scripts\Join-AltStoreDeployPrep.ps1` so deploy starts AltServer and checks the phone subnet. Pythonista zip deploys do not.
+AltStore IPA neighbors (`ios_3d_loop_segments\deploy.ps1`, `web_auto_parking\deploy.ps1`) dot-source `altserver_refresh_scripts\Join-AltStoreDeployPrep.ps1` so deploy starts AltServer (phone-subnet check stays on USB plug-in). Pythonista zip deploys do not.
