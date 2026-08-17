@@ -11,8 +11,8 @@ ign/
 *.pyc
 .venv/
 
-# Clash controller API secret and local installer — do not publish
-Clash/profiles/controller.secret
+# Clash controller API secret, local installer, and Verge profiles — do not publish
+Clash/profiles/
 Clash/*.exe
 
 # USB watcher runtime log
