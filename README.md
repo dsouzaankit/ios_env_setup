@@ -6,7 +6,7 @@ Shared Windows helpers for iOS sideloading / AltServer / phone LAN. Used as a Gi
 
 | Path | Role |
 |------|------|
-| `altserver_refresh/` | Locate/start AltServer; phone Wi-Fi IPv4 via USB + USB pcapd; reboot the phone’s AP if it is off the PC/AltServer subnet |
+| `altserver_refresh/` | Locate/start AltServer; phone Wi-Fi IPv4 via USB + USB pcapd; if off-subnet, tcp/23-probe then WifiRestart the phone AP (preferred) or this PC’s gateway |
 | `Clash/` | Clash Verge / mihomo profiles + optional elevated drop of TUN `224.0.0.0/4` for `.local` / other mDNS ([Clash/README.md](Clash/README.md)). Phone-IP probe does not need this. |
 | `setup-ios-webview-debug.ps1` / `start-ios-webview-debug.ps1` | WKWebView inspector helpers (kit is local under `ign/`, not in this repo) |
 

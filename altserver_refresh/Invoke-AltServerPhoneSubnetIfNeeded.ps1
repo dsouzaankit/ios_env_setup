@@ -9,10 +9,13 @@
   Compares it to this PC's LAN IPv4(s) - AltServer binds those interfaces.
 
   If subnets differ, infers telnet_reboot_wlan_*.py from
-  P:\all_scripts\5g_router_reboot (wifi_dx_common_*.py ROUTER_IP on the phone's
-  current subnet), runs that AP's WifiRestart (not a full reboot), waits briefly
-  for a new phone IP, and checks again. Same off-subnet after a bounce stops that
-  wait early and retries the AP (up to MaxRounds), matching the PC gateway loop.
+  P:\all_scripts\5g_router_reboot (wifi_dx_common_*.py ROUTER_IP). Probes
+  tcp/23 (~1.5s) on the phone's AP and on this PC's gateway the same way
+  before telnet (~60s on WinError 10060). Uses the first that answers
+  (phone AP, then PC gateway); no assumption that either direction can
+  reach the other. Telnet failure tries the other reachable AP.
+  Same off-subnet after a bounce stops that wait early and retries (up to
+  MaxRounds), matching the PC gateway loop.
 
   Direct run waits for Enter. Pass -NoWaitEnter when invoked as a child.
 
@@ -294,6 +297,81 @@ function Find-RebootScriptForIp {
     return $null
 }
 
+function Test-RouterTcp23 {
+    param(
+        [Parameter(Mandatory = $true)][string] $Ip,
+        [int] $TimeoutMs = 1500
+    )
+    $client = $null
+    try {
+        $client = [System.Net.Sockets.TcpClient]::new()
+        $iar = $client.BeginConnect($Ip.Trim(), 23, $null, $null)
+        if (-not $iar.AsyncWaitHandle.WaitOne($TimeoutMs, $false)) {
+            return $false
+        }
+        $client.EndConnect($iar)
+        return [bool]$client.Connected
+    } catch {
+        return $false
+    } finally {
+        if ($null -ne $client) {
+            try { $client.Close() } catch {}
+        }
+    }
+}
+
+function Test-WifiRestartTargetReachable {
+    param(
+        [Parameter(Mandatory = $true)] $Target,
+        [int] $TimeoutMs = 1500
+    )
+    $ok = Test-RouterTcp23 -Ip $Target.RouterIp -TimeoutMs $TimeoutMs
+    if ($ok) {
+        Write-Host ('[altserver-subnet] tcp/23 {0} ({1}) open.' -f $Target.RouterIp, $Target.Model)
+    } else {
+        Write-Host ('[altserver-subnet] tcp/23 {0} ({1}) no reply in {2}ms; skip telnet (would wait ~60s).' -f `
+            $Target.RouterIp, $Target.Model, $TimeoutMs) -ForegroundColor Yellow
+    }
+    return $ok
+}
+
+function Find-RebootScriptForPcGateway {
+    param(
+        [Parameter(Mandatory = $true)] $PcLans,
+        [Parameter(Mandatory = $true)][string] $ScriptsRoot,
+        [int] $PrefixLen = 24
+    )
+    $ordered = @($PcLans | Sort-Object {
+            if ($_.Adapter -match '(?i)wi-?fi|wlan|wireless') { 0 } else { 1 }
+        })
+    foreach ($lan in $ordered) {
+        foreach ($ip in @($lan.Gateway, $lan.Ip)) {
+            if ([string]::IsNullOrWhiteSpace([string]$ip)) { continue }
+            $hit = Find-RebootScriptForIp -PhoneIp $ip -ScriptsRoot $ScriptsRoot -PrefixLen $PrefixLen
+            if ($hit) { return $hit }
+        }
+    }
+    return $null
+}
+
+function Invoke-RouterWifiRestart {
+    param(
+        [Parameter(Mandatory = $true)] $Target,
+        [Parameter(Mandatory = $true)][string] $PyExe
+    )
+    Write-Host ('[altserver-subnet] Running: {0}' -f $Target.Script)
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & $PyExe -3.12 $Target.Script
+        $code = 0
+        if ($null -ne $LASTEXITCODE) { $code = [int]$LASTEXITCODE }
+        return $code
+    } finally {
+        $ErrorActionPreference = $prev
+    }
+}
+
 function Get-KnownRouterIps {
     param([Parameter(Mandatory = $true)][string] $ScriptsRoot)
     $ips = [System.Collections.Generic.List[string]]::new()
@@ -429,36 +507,65 @@ try {
 
         $prefixForMatch = if ($PrefixLength -gt 0) { $PrefixLength } else { 24 }
         $ipForAp = Get-ApHintIp $probe $lastKnownIp
-        $target = $null
+        $phoneTarget = $null
         if ($ipForAp) {
-            $target = Find-RebootScriptForIp -PhoneIp $ipForAp -ScriptsRoot $RebootScriptsRoot -PrefixLen $prefixForMatch
+            $phoneTarget = Find-RebootScriptForIp -PhoneIp $ipForAp -ScriptsRoot $RebootScriptsRoot -PrefixLen $prefixForMatch
         }
-        if (-not $target) {
+        $pcTarget = Find-RebootScriptForPcGateway -PcLans $pcLans -ScriptsRoot $RebootScriptsRoot -PrefixLen $prefixForMatch
+
+        $candidates = [System.Collections.Generic.List[object]]::new()
+        if ($phoneTarget) {
+            [void]$candidates.Add([pscustomobject]@{
+                    RouterIp = $phoneTarget.RouterIp
+                    Model    = $phoneTarget.Model
+                    Script   = $phoneTarget.Script
+                    Role     = 'phone-ap'
+                })
+        }
+        if ($pcTarget -and (-not $phoneTarget -or ($pcTarget.RouterIp -ne $phoneTarget.RouterIp))) {
+            [void]$candidates.Add([pscustomobject]@{
+                    RouterIp = $pcTarget.RouterIp
+                    Model    = $pcTarget.Model
+                    Script   = $pcTarget.Script
+                    Role     = 'pc-gateway'
+                })
+        }
+
+        $reachable = [System.Collections.Generic.List[object]]::new()
+        foreach ($c in $candidates) {
+            if (Test-WifiRestartTargetReachable -Target $c) {
+                [void]$reachable.Add($c)
+            }
+        }
+        if ($reachable.Count -eq 0) {
             Write-Warning @"
-[altserver-subnet] No matching reboot script under $RebootScriptsRoot
-(need wifi_dx_common_*.py ROUTER_IP on the phone's current subnet -> telnet_reboot_wlan_*.py).
-Phone IP: $(if ($ipForAp) { $ipForAp } else { '(unknown - cannot infer AP)' })
+[altserver-subnet] No tcp/23 answer from phone AP or this PC's gateway under $RebootScriptsRoot
+(need wifi_dx_common_*.py ROUTER_IP -> telnet_reboot_wlan_*.py).
+Phone IP: $(if ($ipForAp) { $ipForAp } else { '(unknown)' })
 "@
             # Let Loop Segments recover fall back to LAN-page wait + off-subnet reboots.
             Exit-WithEnter 4
         }
 
-        Write-Host ('[altserver-subnet] Round {0}: rebooting Wi-Fi on {1} ({2}) so the phone can join the AltServer subnet...' -f `
-            $round, $target.RouterIp, $target.Model) -ForegroundColor Cyan
-        Write-Host ('[altserver-subnet] Running: {0}' -f $target.Script)
-        $prev = $ErrorActionPreference
-        $ErrorActionPreference = 'Continue'
-        try {
-            & $py -3.12 $target.Script
-            $rebootCode = 0
-            if ($null -ne $LASTEXITCODE) { $rebootCode = [int]$LASTEXITCODE }
-        } finally {
-            $ErrorActionPreference = $prev
+        $idx = 0
+        $target = $reachable[$idx]
+        $why = if ($target.Role -eq 'pc-gateway') { 'PC gateway' } else { 'phone AP' }
+        Write-Host ('[altserver-subnet] Round {0}: WifiRestart {1} ({2}) via {3} so phone and PC/AltServer share a subnet...' -f `
+            $round, $target.RouterIp, $target.Model, $why) -ForegroundColor Cyan
+        $rebootCode = Invoke-RouterWifiRestart -Target $target -PyExe $py
+        while ($rebootCode -ne 0 -and ($idx + 1) -lt $reachable.Count) {
+            $idx++
+            $next = $reachable[$idx]
+            Write-Host ('[altserver-subnet] WifiRestart {0} ({1}) failed (exit {2}); trying {3} ({4}) the same way.' -f `
+                $target.RouterIp, $target.Model, $rebootCode, $next.RouterIp, $next.Model) -ForegroundColor Yellow
+            $target = $next
+            $rebootCode = Invoke-RouterWifiRestart -Target $target -PyExe $py
         }
         if ($rebootCode -ne 0) {
             throw ("Reboot script failed (exit {0}): {1}" -f $rebootCode, $target.Script)
         }
 
+        $pcLans = @(Get-PcLanIdentities)
         $previousIp = if ($probe.Ip) { $probe.Ip } elseif ($lastKnownIp) { $lastKnownIp } else { '' }
         $pcHint = @($pcLans | ForEach-Object { '{0}/{1}' -f $_.Ip, $_.PrefixLength }) -join ', '
         Write-Host ('[altserver-subnet] Waiting up to {0}s after WifiRestart for the phone to leave {1} and join a PC/AltServer subnet ({2}); each poll is USB pcapd (~8s). Same off-subnet stops this wait early, then the next round can bounce that AP again.' -f `
@@ -470,6 +577,7 @@ Phone IP: $(if ($ipForAp) { $ipForAp } else { '(unknown - cannot infer AP)' })
             $left = [int][Math]::Max(0, [Math]::Ceiling(($deadline - [datetime]::UtcNow).TotalSeconds))
             Write-Host ('[altserver-subnet] Re-probe ({0}s left; last {1}; want PC subnet)...' -f $left, $(if ($previousIp) { $previousIp } else { '(none)' }))
             Start-Sleep -Seconds $PollSec
+            $pcLans = @(Get-PcLanIdentities)
             $probe = Resolve-PhoneProbe (Get-IphoneLanIpv4 -PyExe $py)
             if (-not $probe.Ip) {
                 $hint = Get-ApHintIp $probe $lastKnownIp

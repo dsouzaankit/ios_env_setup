@@ -23,7 +23,12 @@ Bonjour `mobdev2` is **not** used (mDNS is often empty on the same subnet).
 
 It does **not** call `SetWiFiPowerState` (unsupervised phones typically return ErrorCode 14005 / `DMCTunnelErrorDomain`). It does not join an SSID for you.
 
-If the phone is on another subnet, infers `telnet_reboot_wlan_*.py` from `P:\all_scripts\5g_router_reboot` (`wifi_dx_common_*.py` `ROUTER_IP` on the phone’s subnet) and runs that AP’s **WifiRestart** (not a full reboot). Then waits up to **20s** (`-WaitPhoneIpSec`) — the WifiRestart script itself is **~10s**. Same off-subnet after a bounce (DHCP may change, e.g. `.95` → `.29`) **stops that wait early** and **WifiRestarts that AP again** (up to **3** rounds). A later pcapd miss (radio down during the bounce) still uses the **last known** phone IP **or AP hint** (e.g. `192.168.2.1`) to pick the AP. This PC must be able to **telnet** that `ROUTER_IP`. Rejoining the same SSID often will not put the phone on the PC/AltServer subnet — forget that network or join the PC’s Wi-Fi if rounds are exhausted.
+If the phone is on another subnet, infers `telnet_reboot_wlan_*.py` from `P:\all_scripts\5g_router_reboot` (`wifi_dx_common_*.py` `ROUTER_IP`). Before telnet it **probes tcp/23 (~1.5s)** on **both** APs the same way (ICMP ping is not used — it can succeed in only one direction; a dead `ROUTER_IP` otherwise sits ~60s on WinError 10060):
+
+1. **Phone AP** (preferred when tcp/23 answers) — WifiRestart so the phone can leave that SSID
+2. **This PC’s gateway** — same probe; used when the phone AP does not answer, or when telnet to the phone AP fails
+
+No assumption that either AP can reach the other (e.g. MR5100 `10.0.100.2` vs MR6500 `192.168.2.1`). Then waits up to **20s** (`-WaitPhoneIpSec`) — the WifiRestart script itself is **~10s**. Same off-subnet after a bounce (DHCP may change, e.g. `.95` → `.29`) **stops that wait early** and retries (up to **3** rounds). A later pcapd miss (radio down during the bounce) still uses the **last known** phone IP **or AP hint** (e.g. `192.168.2.1`) to pick the AP. Rejoining the same SSID often will not put the phone on the PC/AltServer subnet — forget that network or join the PC’s Wi-Fi if rounds are exhausted.
 
 ```powershell
 pwsh -File .\Invoke-AltServerPhoneSubnetIfNeeded.ps1
