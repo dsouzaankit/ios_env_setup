@@ -8,12 +8,11 @@
   Uses pymobiledevice3 (USB identify, then USB pcapd on en0) for the phone LAN IP.
   Compares it to this PC's LAN IPv4(s) - AltServer binds those interfaces.
 
-  If subnets differ, infers telnet_reboot_wlan_*.py from
-  P:\all_scripts\5g_router_reboot (wifi_dx_common_*.py ROUTER_IP). Probes
-  tcp/23 (~1.5s) on the phone's AP and on this PC's gateway the same way
-  before telnet (~60s on WinError 10060). Uses the first that answers
-  (phone AP, then PC gateway); no assumption that either direction can
-  reach the other. Telnet failure tries the other reachable AP.
+  If subnets differ, picks telnet_reboot_wlan_*.py only from
+  wifi_dx_common_*.py ROUTER_IP (phone host /24, then this PC's gateway).
+  Does not scrape AP IPs from pcapd. Probes tcp/23 (~1.5s) the same way
+  before telnet (~60s on WinError 10060). Phone AP first if that ROUTER_IP
+  answers, else PC gateway. Telnet failure tries the other reachable AP.
   Same off-subnet after a bounce stops that wait early and retries (up to
   MaxRounds), matching the PC gateway loop.
 
@@ -248,23 +247,23 @@ function Get-IphoneLanIpv4 {
     $errText = (@($lines | Where-Object { $_ -notmatch '^\s*\{' })) -join "`n"
     $ip = $null
     $source = $null
-    $gatewayHint = $null
+    $wifiAssociated = $null
     if ($jsonLine) {
         try {
             $obj = $jsonLine | ConvertFrom-Json
             if ($obj.ip) { $ip = [string]$obj.ip }
             if ($obj.source) { $source = [string]$obj.source }
-            if ($obj.PSObject.Properties['gatewayHint'] -and $obj.gatewayHint) {
-                $gatewayHint = [string]$obj.gatewayHint
+            if ($obj.PSObject.Properties['wifiAssociated'] -and $null -ne $obj.wifiAssociated) {
+                $wifiAssociated = [bool]$obj.wifiAssociated
             }
         } catch {}
     }
     return [pscustomobject]@{
-        ExitCode    = $code
-        Ip          = $ip
-        Source      = $source
-        GatewayHint = $gatewayHint
-        Error       = $errText
+        ExitCode       = $code
+        Ip             = $ip
+        Source         = $source
+        WifiAssociated = $wifiAssociated
+        Error          = $errText
     }
 }
 
@@ -363,10 +362,15 @@ function Invoke-RouterWifiRestart {
     $prev = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        & $PyExe -3.12 $Target.Script
+        # Capture native output so it is not part of this function's return value
+        # (otherwise $rebootCode becomes Object[] and -f prints System.Object[]).
+        $output = & $PyExe -3.12 $Target.Script 2>&1
         $code = 0
         if ($null -ne $LASTEXITCODE) { $code = [int]$LASTEXITCODE }
-        return $code
+        foreach ($line in @($output)) {
+            Write-Host ([string]$line)
+        }
+        return [int]$code
     } finally {
         $ErrorActionPreference = $prev
     }
@@ -434,12 +438,7 @@ try {
             $src = if ($Probe.Source) { $Probe.Source } else { 'unknown' }
             Write-Host ('[altserver-subnet] Phone LAN IP: {0} (source={1})' -f $Probe.Ip, $src) -ForegroundColor Cyan
         } else {
-            $gw = [string]$Probe.GatewayHint
-            if (-not [string]::IsNullOrWhiteSpace($gw)) {
-                Write-Host ('[altserver-subnet] Phone LAN IP: (none) exit={0}; AP hint {1}' -f $Probe.ExitCode, $gw)
-            } else {
-                Write-Host ('[altserver-subnet] Phone LAN IP: (none) exit={0}' -f $Probe.ExitCode)
-            }
+            Write-Host ('[altserver-subnet] Phone LAN IP: (none) exit={0}' -f $Probe.ExitCode)
             if ($Probe.Error) {
                 Write-Host $Probe.Error -ForegroundColor DarkGray
             }
@@ -448,19 +447,18 @@ try {
 
     function Resolve-PhoneProbe([object] $Raw) {
         if ($Raw.Ip -and (Test-IsKnownRouterIp -Ip $Raw.Ip -RouterIps $knownRouterIps)) {
-            Write-Host ('[altserver-subnet] Ignoring pcapd IP {0} (that is an AP/gateway ROUTER_IP, not the phone).' -f $Raw.Ip) -ForegroundColor DarkGray
-            if ([string]::IsNullOrWhiteSpace([string]$Raw.GatewayHint)) {
-                $Raw.GatewayHint = $Raw.Ip
-            }
+            Write-Host ('[altserver-subnet] Ignoring pcapd IP {0} (wifi_dx_common ROUTER_IP, not the phone).' -f $Raw.Ip) -ForegroundColor DarkGray
             $Raw.Ip = $null
         }
         return $Raw
     }
 
-    function Get-ApHintIp([object] $Probe, [string] $Fallback = '') {
+    function Get-PhoneHostIp([object] $Probe, [string] $Fallback = '') {
         if ($Probe.Ip) { return [string]$Probe.Ip }
-        if (-not [string]::IsNullOrWhiteSpace([string]$Probe.GatewayHint)) { return [string]$Probe.GatewayHint }
-        return $Fallback
+        if (-not [string]::IsNullOrWhiteSpace($Fallback) -and -not (Test-IsKnownRouterIp -Ip $Fallback -RouterIps $knownRouterIps)) {
+            return $Fallback
+        }
+        return ''
     }
 
     $probe = Resolve-PhoneProbe (Get-IphoneLanIpv4 -PyExe $py)
@@ -469,13 +467,17 @@ try {
         Write-Host '[altserver-subnet] No USB iPhone (plug in, Trust This Computer, unlock).' -ForegroundColor Yellow
         Exit-WithEnter 2
     }
-    if (-not $probe.Ip -and [string]::IsNullOrWhiteSpace([string]$probe.GatewayHint) -and ($probe.ExitCode -eq 4 -or $probe.ExitCode -eq 0)) {
-        Write-Host '[altserver-subnet] USB iPhone present but no Wi-Fi IPv4 from pcapd (no AP hint either).' -ForegroundColor Yellow
-        Exit-WithEnter 4
+    if (-not $probe.Ip -and ($probe.ExitCode -eq 4 -or $probe.ExitCode -eq 0)) {
+        if ($probe.WifiAssociated -eq $true) {
+            Write-Host '[altserver-subnet] Wi-Fi associated but no phone host IPv4 from pcapd. WifiRestart candidates come from wifi_dx_common (this PC gateway).' -ForegroundColor Yellow
+        } else {
+            Write-Host '[altserver-subnet] USB iPhone present but no Wi-Fi IPv4 from pcapd.' -ForegroundColor Yellow
+            Exit-WithEnter 4
+        }
     }
 
     $round = 0
-    $lastKnownIp = Get-ApHintIp $probe
+    $lastKnownIp = Get-PhoneHostIp $probe
     while ($true) {
         if ($probe.Ip) {
             $lastKnownIp = [string]$probe.Ip
@@ -488,9 +490,11 @@ try {
             Write-Host ('[altserver-subnet] Phone {0} is NOT on a PC/AltServer subnet.' -f $probe.Ip) -ForegroundColor Yellow
         } else {
             Write-Host '[altserver-subnet] Phone has no Wi-Fi IPv4 yet (USB ok; pcapd empty).' -ForegroundColor Yellow
-            $lastKnownIp = Get-ApHintIp $probe $lastKnownIp
+            $lastKnownIp = Get-PhoneHostIp $probe $lastKnownIp
             if ($lastKnownIp) {
-                Write-Host ('[altserver-subnet] Using {0} to pick the AP (phone host IP missing; AP/.1 from pcapd is enough).' -f $lastKnownIp)
+                Write-Host ('[altserver-subnet] Matching last phone host {0} to wifi_dx_common ROUTER_IP.' -f $lastKnownIp)
+            } else {
+                Write-Host '[altserver-subnet] No phone host IP; matching this PC gateway to wifi_dx_common ROUTER_IP.'
             }
         }
 
@@ -506,10 +510,10 @@ try {
         }
 
         $prefixForMatch = if ($PrefixLength -gt 0) { $PrefixLength } else { 24 }
-        $ipForAp = Get-ApHintIp $probe $lastKnownIp
+        $phoneHostIp = Get-PhoneHostIp $probe $lastKnownIp
         $phoneTarget = $null
-        if ($ipForAp) {
-            $phoneTarget = Find-RebootScriptForIp -PhoneIp $ipForAp -ScriptsRoot $RebootScriptsRoot -PrefixLen $prefixForMatch
+        if ($phoneHostIp) {
+            $phoneTarget = Find-RebootScriptForIp -PhoneIp $phoneHostIp -ScriptsRoot $RebootScriptsRoot -PrefixLen $prefixForMatch
         }
         $pcTarget = Find-RebootScriptForPcGateway -PcLans $pcLans -ScriptsRoot $RebootScriptsRoot -PrefixLen $prefixForMatch
 
@@ -541,7 +545,7 @@ try {
             Write-Warning @"
 [altserver-subnet] No tcp/23 answer from phone AP or this PC's gateway under $RebootScriptsRoot
 (need wifi_dx_common_*.py ROUTER_IP -> telnet_reboot_wlan_*.py).
-Phone IP: $(if ($ipForAp) { $ipForAp } else { '(unknown)' })
+Phone IP: $(if ($phoneHostIp) { $phoneHostIp } else { '(unknown)' })
 "@
             # Let Loop Segments recover fall back to LAN-page wait + off-subnet reboots.
             Exit-WithEnter 4
@@ -552,14 +556,14 @@ Phone IP: $(if ($ipForAp) { $ipForAp } else { '(unknown)' })
         $why = if ($target.Role -eq 'pc-gateway') { 'PC gateway' } else { 'phone AP' }
         Write-Host ('[altserver-subnet] Round {0}: WifiRestart {1} ({2}) via {3} so phone and PC/AltServer share a subnet...' -f `
             $round, $target.RouterIp, $target.Model, $why) -ForegroundColor Cyan
-        $rebootCode = Invoke-RouterWifiRestart -Target $target -PyExe $py
+        $rebootCode = [int](Invoke-RouterWifiRestart -Target $target -PyExe $py)
         while ($rebootCode -ne 0 -and ($idx + 1) -lt $reachable.Count) {
             $idx++
             $next = $reachable[$idx]
             Write-Host ('[altserver-subnet] WifiRestart {0} ({1}) failed (exit {2}); trying {3} ({4}) the same way.' -f `
                 $target.RouterIp, $target.Model, $rebootCode, $next.RouterIp, $next.Model) -ForegroundColor Yellow
             $target = $next
-            $rebootCode = Invoke-RouterWifiRestart -Target $target -PyExe $py
+            $rebootCode = [int](Invoke-RouterWifiRestart -Target $target -PyExe $py)
         }
         if ($rebootCode -ne 0) {
             throw ("Reboot script failed (exit {0}): {1}" -f $rebootCode, $target.Script)
@@ -580,8 +584,8 @@ Phone IP: $(if ($ipForAp) { $ipForAp } else { '(unknown)' })
             $pcLans = @(Get-PcLanIdentities)
             $probe = Resolve-PhoneProbe (Get-IphoneLanIpv4 -PyExe $py)
             if (-not $probe.Ip) {
-                $hint = Get-ApHintIp $probe $lastKnownIp
-                if ($hint) { $lastKnownIp = $hint }
+                $hostIp = Get-PhoneHostIp $probe $lastKnownIp
+                if ($hostIp) { $lastKnownIp = $hostIp }
                 continue
             }
             $changed = [string]::IsNullOrWhiteSpace($previousIp) -or ($probe.Ip -ne $previousIp)
@@ -617,7 +621,7 @@ iOS rejoined that SSID (DHCP may change, e.g. .95 -> .29). Stopping this wait an
         }
         $probe = Resolve-PhoneProbe (Get-IphoneLanIpv4 -PyExe $py)
         Show-PhoneProbe $probe
-        $lastKnownIp = Get-ApHintIp $probe $lastKnownIp
+        $lastKnownIp = Get-PhoneHostIp $probe $lastKnownIp
     }
 } catch {
     if ("$($_.Exception.Message)" -match '^ALTSERVER_SUBNET_EXIT:') { throw }

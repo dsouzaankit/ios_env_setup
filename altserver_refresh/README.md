@@ -17,18 +17,13 @@ Uses **pymobiledevice3** to read the iPhone’s current Wi-Fi IPv4 and checks it
 Probe order (`Get-IphoneLanIpv4.py`):
 
 1. USB `usbmux list` (identify the phone)
-2. USB `com.apple.pcapd` on the IORegistry Wi-Fi iface (usually `en0`; up to two captures) — IPv4 from Wi-Fi packet headers; works across subnets without admin tunneld. First window is ~8s. If that window is empty while the radio is associated (idle phones often send nothing), or packets are only on cellular (`pdp_ip*`), a second ~16s capture runs. Skip the retry only when IORegistry shows Wi-Fi is not associated. A window that only sees the AP (`.1` / `.254`, e.g. `192.168.2.1`) is **not** the phone; that address is kept as an **AP hint** so the matching `telnet_reboot_wlan_*.py` can still run. On a miss, stderr includes `ifaces=pdp_ip0:55,en0:2` so you can see which BSD names pcapd used.
+2. USB `com.apple.pcapd` on the IORegistry Wi-Fi iface (usually `en0`; up to two captures) — IPv4 from Wi-Fi packet headers; works across subnets without admin tunneld. First window is ~8s. If that window is empty while the radio is associated (idle phones often send nothing), or packets are only on cellular (`pdp_ip*`), a second ~16s capture runs. Skip the retry only when IORegistry shows Wi-Fi is not associated. pcapd is only used to find the **phone host IPv4**. Which AP to WifiRestart comes from `wifi_dx_common_*.py` `ROUTER_IP` (phone host /24, else this PC’s gateway) — not from sniffing `.1` / `.2` / `.254` / multicast. Associated radio but no phone host IP still **tcp/23-probes this PC’s gateway** via dx_common. On a miss, stderr includes `ifaces=pdp_ip0:55,en0:2` so you can see which BSD names pcapd used.
 
 Bonjour `mobdev2` is **not** used (mDNS is often empty on the same subnet).
 
 It does **not** call `SetWiFiPowerState` (unsupervised phones typically return ErrorCode 14005 / `DMCTunnelErrorDomain`). It does not join an SSID for you.
 
-If the phone is on another subnet, infers `telnet_reboot_wlan_*.py` from `P:\all_scripts\5g_router_reboot` (`wifi_dx_common_*.py` `ROUTER_IP`). Before telnet it **probes tcp/23 (~1.5s)** on **both** APs the same way (ICMP ping is not used — it can succeed in only one direction; a dead `ROUTER_IP` otherwise sits ~60s on WinError 10060):
-
-1. **Phone AP** (preferred when tcp/23 answers) — WifiRestart so the phone can leave that SSID
-2. **This PC’s gateway** — same probe; used when the phone AP does not answer, or when telnet to the phone AP fails
-
-No assumption that either AP can reach the other (e.g. MR5100 `10.0.100.2` vs MR6500 `192.168.2.1`). Then waits up to **20s** (`-WaitPhoneIpSec`) — the WifiRestart script itself is **~10s**. Same off-subnet after a bounce (DHCP may change, e.g. `.95` → `.29`) **stops that wait early** and retries (up to **3** rounds). A later pcapd miss (radio down during the bounce) still uses the **last known** phone IP **or AP hint** (e.g. `192.168.2.1`) to pick the AP. Rejoining the same SSID often will not put the phone on the PC/AltServer subnet — forget that network or join the PC’s Wi-Fi if rounds are exhausted.
+If the phone is on another subnet, picks `telnet_reboot_wlan_*.py` **only** from `P:\all_scripts\5g_router_reboot` `wifi_dx_common_*.py` `ROUTER_IP` (phone host /24 preferred, then this PC’s gateway). Before telnet it **probes tcp/23 (~1.5s)** on those APs the same way (ICMP ping is not used; a dead `ROUTER_IP` otherwise sits ~60s on WinError 10060). Telnet failure tries the other reachable dx_common AP. Then waits up to **20s** (`-WaitPhoneIpSec`) — the WifiRestart script itself is **~10s**. Same off-subnet after a bounce (DHCP may change, e.g. `.95` → `.29`) **stops that wait early** and retries (up to **3** rounds). A later pcapd miss still uses the **last known phone host IP** (if any) to match dx_common. Rejoining the same SSID often will not put the phone on the PC/AltServer subnet — forget that network or join the PC’s Wi-Fi if rounds are exhausted.
 
 ```powershell
 pwsh -File .\Invoke-AltServerPhoneSubnetIfNeeded.ps1
