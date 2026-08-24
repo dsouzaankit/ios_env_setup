@@ -128,7 +128,8 @@ function Start-AltServerInteractive {
 
 function Start-AltServer {
     param(
-        [int] $WaitSeconds = 10
+        [int] $WaitSeconds = 10,
+        [switch] $ForceRestart
     )
 
     $path = Get-AltServerPath
@@ -144,7 +145,20 @@ function Start-AltServer {
         }
     }
 
-    if (Test-AltServerRunning) {
+    if ($ForceRestart -and (@(Get-AltServerProcess).Count -gt 0)) {
+        Write-Host '[altserver] Restarting so Bonjour re-advertises this PC Wi-Fi address...'
+        if (-not (Stop-AltServer)) {
+            Write-Warning '[altserver] Could not exit the existing AltServer process(es).'
+            return [pscustomobject]@{
+                Installed = $true
+                Running   = $false
+                Path      = $path
+                Started   = $false
+            }
+        }
+    }
+
+    if (-not $ForceRestart -and (Test-AltServerRunning)) {
         Write-Host "[altserver] Already running (tray): $path"
         Write-Host '[altserver] If the icon is missing, check the hidden-icons overflow (^).' -ForegroundColor DarkGray
         return [pscustomobject]@{
@@ -212,7 +226,8 @@ function Start-AltServer {
 function Write-AltServerNotice {
     param(
         [switch] $AlwaysStatus,
-        [switch] $EnsureStarted
+        [switch] $EnsureStarted,
+        [switch] $ForceRestart
     )
 
     $path = Get-AltServerPath
@@ -230,8 +245,8 @@ function Write-AltServerNotice {
 
     $running = Test-AltServerRunning
     $started = $false
-    if ($EnsureStarted -and -not $running) {
-        $startResult = Start-AltServer -WaitSeconds 10
+    if ($ForceRestart -or ($EnsureStarted -and -not $running)) {
+        $startResult = Start-AltServer -WaitSeconds 10 -ForceRestart:$ForceRestart
         $running = [bool]$startResult.Running
         $started = [bool]$startResult.Started
     }

@@ -8,13 +8,15 @@
   Dotsources Get-AltServer.ps1. Prints status and starts AltServer when idle.
 
   Direct run waits for Enter. Pass -NoWaitEnter when invoked as a child.
+  Pass -ForceRestart to quit and relaunch so Bonjour picks up the current Wi-Fi IP.
 
 .EXAMPLE
   pwsh -File .\Invoke-AltServerIfNeeded.ps1
 #>
 [CmdletBinding()]
 param(
-    [switch] $NoWaitEnter
+    [switch] $NoWaitEnter,
+    [switch] $ForceRestart
 )
 
 Set-StrictMode -Version Latest
@@ -86,14 +88,14 @@ if ($PSVersionTable.PSEdition -ne 'Core' -or [int]$PSVersionTable.PSVersion.Majo
 }
 
 $ScriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
-$Core = Join-Path $ScriptDir 'Get-AltServer.ps1'
+$Core = Join-Path (Split-Path -Parent $ScriptDir) 'lib\Get-AltServer.ps1'
 if (-not (Test-Path -LiteralPath $Core)) {
     throw "Missing $Core"
 }
 . $Core
 
 try {
-    $notice = Write-AltServerNotice -AlwaysStatus -EnsureStarted
+    $notice = Write-AltServerNotice -AlwaysStatus -EnsureStarted -ForceRestart:$ForceRestart
     if (-not $notice.Installed) {
         Exit-WithEnter 2
     }

@@ -1,11 +1,21 @@
 # AltServer helpers
 
+Role folders match Loop Segments `windows\`: shared helpers in **`lib\`**, USB watch in **`usb\`**, phone subnet in **`lan\`**, tray start in **`sideload\`**, multicast drop in **`VpnMulticast\`**.
+
+| Folder | Role |
+|--------|------|
+| `lib/` | `Get-AltServer.ps1`, `Join-AltStoreDeployPrep.ps1` |
+| `sideload/` | `Invoke-AltServerIfNeeded.ps1` |
+| `usb/` | USB plug-in watch + logon task |
+| `lan/` | Phone Wi-Fi IPv4 / subnet + WifiRestart |
+| `VpnMulticast/` | Drop TUN/VPN `224.0.0.0/4` so Bonjour stays on Wi-Fi |
+
 ## Start AltServer if needed
 
 `Get-AltServer.ps1` (dot-source) locates `AltServer.exe`, reports whether it is **usable in the tray**, and can start (or restart) it. A process in Task Manager is not enough — extra/stale `AltServer.exe` instances often have no notification-area icon. Loop Segments companion / USB launch still call `windows\lib\Get-LoopSegmentsAltServer.ps1`, which wraps this file and adds Loop Segments-specific 7-day / Trust copy.
 
 ```powershell
-pwsh -File .\Invoke-AltServerIfNeeded.ps1
+pwsh -File .\sideload\Invoke-AltServerIfNeeded.ps1
 ```
 
 Direct run waits for **Enter**. Child callers: `-NoWaitEnter`. Exit **0** running (tray-usable), **2** not installed, **1** start failed. If Task Manager shows `AltServer.exe` but there is no icon, this helper **restarts** it (Explorer restart or a second instance drops the tray). Start uses scheduled task **`IosEnv-AltServer-TrayKick`** (interactive, same desktop as a Start Menu launch); a plain `Start-Process` from a script/agent does not create the tray icon. The old name `LoopSegments-AltServer-TrayKick` is unregistered on the next successful kick.
@@ -26,7 +36,7 @@ It does **not** call `SetWiFiPowerState` (unsupervised phones typically return E
 If the phone is on another subnet, picks `telnet_reboot_wlan_*.py` **only** from `P:\all_scripts\5g_router_reboot` `wifi_dx_common_*.py` `ROUTER_IP` (phone host /24 preferred, then this PC’s gateway). Before telnet it **probes tcp/23 (~1.5s)** on those APs the same way (ICMP ping is not used; a dead `ROUTER_IP` otherwise sits ~60s on WinError 10060). Telnet failure tries the other reachable dx_common AP. Then waits up to **20s** (`-WaitPhoneIpSec`) — the WifiRestart script itself is **~10s**. Same off-subnet after a bounce (DHCP may change, e.g. `.95` → `.29`) **stops that wait early** and retries (up to **3** rounds). A later pcapd miss still uses the **last known phone host IP** (if any) to match dx_common. Rejoining the same SSID often will not put the phone on the PC/AltServer subnet — forget that network or join the PC’s Wi-Fi if rounds are exhausted.
 
 ```powershell
-pwsh -File .\Invoke-AltServerPhoneSubnetIfNeeded.ps1
+pwsh -File .\lan\Invoke-AltServerPhoneSubnetIfNeeded.ps1
 ```
 
 Direct run waits for **Enter**. In-process callers (Loop Segments recover): `-NoWaitEnter` throws `ALTSERVER_SUBNET_EXIT:<code>` instead of `exit`. `pwsh -File -NoWaitEnter` (deploy prep) **exits** with that code.
@@ -39,15 +49,15 @@ Loop Segments companion/rclone call `windows\lan\Invoke-LoopSegmentsPhoneLanReco
 
 ## AltStore IPA deploy (neighbor apps)
 
-`Join-AltStoreDeployPrep.ps1` (dot-source) starts AltServer and clears Clash multicast. It does **not** run the phone-subnet check (USB plug-in already does that). Pass `-CheckPhoneSubnet` to run pcapd here. Missing USB only warns. Used by:
+`Join-AltStoreDeployPrep.ps1` (dot-source) starts AltServer and drops Mihomo/Surfshark `224.0.0.0/4`. It does **not** run the phone-subnet check (USB plug-in already does that). Pass `-CheckPhoneSubnet` to run pcapd here. Missing USB only warns. Used by:
 
 - `ios_3d_loop_segments\deploy.ps1` / `copy-to-icloud.ps1`
 - `web_auto_parking\deploy.ps1`
 
 ```powershell
 $join = @(
-    (Join-Path $ProjectRoot 'env_setup\altserver_refresh\Join-AltStoreDeployPrep.ps1')
-    'P:\all_scripts\iOS apps\env_setup\altserver_refresh\Join-AltStoreDeployPrep.ps1'
+    (Join-Path $ProjectRoot 'env_setup\altserver_refresh\lib\Join-AltStoreDeployPrep.ps1')
+    'P:\all_scripts\iOS apps\env_setup\altserver_refresh\lib\Join-AltStoreDeployPrep.ps1'
 ) | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
 if ($join) { . $join; Invoke-AltStoreDeployPrep }
 # Optional: Invoke-AltStoreDeployPrep -CheckPhoneSubnet
@@ -61,13 +71,13 @@ All names use the **`IosEnv-`** prefix (not Loop Segments). Loop Segments may st
 
 | Task | Created by | Privileges | When it runs | What it does |
 |------|------------|------------|--------------|--------------|
-| `IosEnv-AltServer-TrayKick` | `Get-AltServer.ps1` on start (dummy 2099 trigger; `Start-ScheduledTask`) | Interactive, Limited | On demand when AltServer must appear in the tray | Launches `AltServer.exe` the same way as Start Menu / double-click. Replaces leftover `LoopSegments-AltServer-TrayKick`. |
-| `IosEnv-AltServer-UsbWatch` | `Register-IphoneUsbAltServer.ps1` | Interactive, Limited | At logon, immediately, and every **2 min** if it died (`IgnoreNew` if already running) | Hidden `Watch-IphoneUsbAltServer.ps1` via `wscript` (no console). Task stays **Running** while that watcher is up; **Ready** means the last start exited. |
-| `IosEnv-Clash-RemoveMihomoMulticast` | Same register script (one **UAC** via `Clash\Register-ClashRemoveMulticastRouteTask.ps1`) | Interactive, **Highest** | On demand each USB plug-in (`Start-ScheduledTask`) | `Clash\Remove-MihomoMulticastRoute.ps1`: drop TUN `224.0.0.0/4`, raise Mihomo metric, restart Bonjour. |
+| `IosEnv-AltServer-TrayKick` | `lib\Get-AltServer.ps1` on start (dummy 2099 trigger; `Start-ScheduledTask`) | Interactive, Limited | On demand when AltServer must appear in the tray | Launches `AltServer.exe` the same way as Start Menu / double-click. Replaces leftover `LoopSegments-AltServer-TrayKick`. |
+| `IosEnv-AltServer-UsbWatch` | `usb\Register-IphoneUsbAltServer.ps1` | Interactive, Limited | At logon, immediately, and every **2 min** if it died (`IgnoreNew` if already running) | Hidden `usb\Watch-IphoneUsbAltServer.ps1` via `wscript` (no console). Task stays **Running** while that watcher is up; **Ready** means the last start exited. |
+| `IosEnv-Vpn-RemoveMulticast` | Same register script (one **UAC** via `VpnMulticast\Register-VpnMulticastRouteTask.ps1`) | Interactive, **Highest** | On demand each USB plug-in (`Start-ScheduledTask`) | `VpnMulticast\Remove-VpnMulticastRoute.ps1`: drop `224.0.0.0/4` on Mihomo and Surfshark, raise those metrics, restart Bonjour. |
 
 ```powershell
 Get-ScheduledTask -TaskName 'IosEnv-*' | Select-Object TaskName, State
-pwsh -File .\Register-IphoneUsbAltServer.ps1 -Unregister   # UsbWatch + Clash multicast; not TrayKick
+pwsh -File .\usb\Register-IphoneUsbAltServer.ps1 -Unregister   # UsbWatch + VPN multicast; not TrayKick
 ```
 
 `TrayKick` is recreated the next time AltServer is started from these helpers. It does not need to sit in Task Scheduler until then.
@@ -79,14 +89,14 @@ pwsh -File .\Register-IphoneUsbAltServer.ps1 -Unregister   # UsbWatch + Clash mu
 One-shot test (phone already plugged in):
 
 ```powershell
-pwsh -File .\Watch-IphoneUsbAltServer.ps1 -Once
+pwsh -File .\usb\Watch-IphoneUsbAltServer.ps1 -Once
 ```
 
 Register a logon task (starts the watcher now, no console). Same user, interactive, no admin. Task Scheduler also kicks it every 2 minutes if it died (`IgnoreNew` if already running). Direct `pwsh.exe` from an Interactive task always shows a window; the default action is `wscript` + `Start-IphoneUsbAltServerWatchHidden.vbs` (WMI hidden process, wait until Watch exits) so keep-alive starts stay hidden and the task stays **Running**. Re-registering stops leftover Watch `pwsh` so the task owns the process (otherwise keep-alive hits the mutex, exits 0, and you only ever see **Ready**).
 
 ```powershell
-pwsh -File .\Register-IphoneUsbAltServer.ps1
-pwsh -File .\Register-IphoneUsbAltServer.ps1 -Unregister
+pwsh -File .\usb\Register-IphoneUsbAltServer.ps1
+pwsh -File .\usb\Register-IphoneUsbAltServer.ps1 -Unregister
 ```
 
 There is no console while it runs. Confirm it is actually in the background:
@@ -103,10 +113,13 @@ Get-Content .\iphone-usb-altserver.log -Tail 15
 
 `-ShowWindow` keeps a console; `-SkipPhoneSubnet` only ensures AltServer. Log: `altserver_refresh\iphone-usb-altserver.log` (gitignored; keeps the last **5** USB-connect sessions). Unlock and Trust This Computer or usbmux is empty (retries a few times). Off-subnet still runs **WifiRestart** on that plug-in.
 
-Each USB plug-in also runs `Clash\Remove-MihomoMulticastRoute.ps1` via scheduled task `IosEnv-Clash-RemoveMihomoMulticast` (**Run with highest privileges**, no UAC per cable). Re-run `Register-IphoneUsbAltServer.ps1` once to create that task.
+Each USB plug-in also runs `VpnMulticast\Remove-VpnMulticastRoute.ps1` via scheduled task `IosEnv-Vpn-RemoveMulticast` (**Run with highest privileges**, no UAC per cable). That drop covers **Mihomo TUN and Surfshark OpenVPN** (`224.0.0.0/4` with a better metric than Wi-Fi), plus leftover `224.0.0.0/4` on **disconnected** Wi-Fi adapters. Re-run `usb\Register-IphoneUsbAltServer.ps1` once to create that task (replaces the old `IosEnv-Clash-RemoveMihomoMulticast` name).
 
-AltStore **Refresh All** saying **AltServer not found** with AltServer already in the tray is usually Clash/mihomo TUN stealing multicast (`224.0.0.0/4` on-link `198.18.0.1`, better metric than Wi-Fi). Same subnet is not enough if Bonjour is in the tunnel. Manual:
+After the subnet check (WifiRestart can move this PC to another LAN), the watcher **restarts AltServer** so Bonjour advertises the current Wi-Fi address. A tray process left running from `10.0.100.x` will not be found once the PC is on `192.168.2.x`.
+
+AltStore **Refresh All** saying **AltServer not found** with AltServer already in the tray is usually a VPN/TUN stealing multicast (`224.0.0.0/4` on Mihomo `198.18.0.1` or Surfshark OpenVPN, better metric than Wi-Fi), **or** a stale AltServer advertisement after the PC LAN changed. Same subnet is not enough if Bonjour is in the tunnel or still publishing an old IP. Manual (UAC; does not disconnect Surfshark), then restart AltServer:
 
 ```powershell
-pwsh -File ..\Clash\Remove-MihomoMulticastRoute.ps1
+pwsh -File .\VpnMulticast\Remove-VpnMulticastRoute.ps1
+pwsh -File .\sideload\Invoke-AltServerIfNeeded.ps1 -NoWaitEnter -ForceRestart
 ```

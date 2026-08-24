@@ -18,16 +18,25 @@
   Prefer the app LAN endpoint http://<phone-ip>:8765/xhr.txt for fetch/XHR bodies.
 
 .NOTES
-  Kit lives in: env_setup\ios-safari-remote-debug-kit
-  First-time generate: .\setup-ios-webview-debug.ps1
+  Kit lives in: env_setup\ign\ios-safari-remote-debug-kit (fallback: env_setup\ios-safari-remote-debug-kit)
+  First-time generate: .\ign\setup-ios-webview-debug.ps1
 #>
 $ErrorActionPreference = "Stop"
 Write-Host "Note: Web Inspector Network/XHR is often broken on Windows. Use phone:8765/xhr.txt instead."
-$kitSrc = Join-Path $PSScriptRoot "ios-safari-remote-debug-kit\src"
-$start = Join-Path $kitSrc "start.ps1"
+$kitSrc = $null
+foreach ($candidate in @(
+        (Join-Path $PSScriptRoot 'ios-safari-remote-debug-kit\src')
+        (Join-Path (Split-Path $PSScriptRoot) 'ios-safari-remote-debug-kit\src')
+    )) {
+    if (Test-Path $candidate) {
+        $kitSrc = $candidate
+        break
+    }
+}
+$start = if ($kitSrc) { Join-Path $kitSrc "start.ps1" } else { $null }
 
-if (-not (Test-Path (Join-Path $kitSrc "WebKit"))) {
-    Write-Host "WebKit inspector not generated yet. Run setup-ios-webview-debug.ps1 first."
+if (-not $kitSrc -or -not (Test-Path (Join-Path $kitSrc "WebKit"))) {
+    Write-Host "WebKit inspector not generated yet. Run ign\setup-ios-webview-debug.ps1 first."
     exit 1
 }
 

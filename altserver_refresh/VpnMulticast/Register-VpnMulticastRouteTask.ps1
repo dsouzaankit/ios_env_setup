@@ -1,11 +1,12 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  Create or remove IosEnv-Clash-RemoveMihomoMulticast (RunLevel Highest).
+  Create or remove IosEnv-Vpn-RemoveMulticast (RunLevel Highest).
 
 .DESCRIPTION
   Must run elevated. Register-IphoneUsbAltServer.ps1 UAC-launches this once so
   USB plug-in can Start-ScheduledTask the drop without Access denied.
+  Also removes the old task name IosEnv-Clash-RemoveMihomoMulticast.
 #>
 [CmdletBinding()]
 param(
@@ -14,11 +15,11 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $here = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
-. (Join-Path $here 'Get-Clash.ps1')
+. (Join-Path $here 'Get-VpnMulticast.ps1')
 
-if (-not (Test-ClashProcessElevated)) {
-    $pwsh = Get-ClashPwshExe
-    $self = Join-Path $here 'Register-ClashRemoveMulticastRouteTask.ps1'
+if (-not (Test-VpnProcessElevated)) {
+    $pwsh = Get-VpnMulticastPwshExe
+    $self = Join-Path $here 'Register-VpnMulticastRouteTask.ps1'
     $arg = "-NoProfile -ExecutionPolicy Bypass -File `"$self`""
     if ($Unregister) { $arg = "$arg -Unregister" }
     $psi = New-Object System.Diagnostics.ProcessStartInfo
@@ -33,14 +34,14 @@ if (-not (Test-ClashProcessElevated)) {
 }
 
 if ($Unregister) {
-    if (Unregister-ClashRemoveMulticastRouteTask) {
-        Write-Host 'Removed scheduled task: IosEnv-Clash-RemoveMihomoMulticast'
+    if (Unregister-VpnMulticastRouteTask) {
+        Write-Host 'Removed scheduled task: IosEnv-Vpn-RemoveMulticast (and old Clash name if present)'
     } else {
-        Write-Host 'No scheduled task named IosEnv-Clash-RemoveMihomoMulticast'
+        Write-Host 'No scheduled task named IosEnv-Vpn-RemoveMulticast or IosEnv-Clash-RemoveMihomoMulticast'
     }
     exit 0
 }
 
-$name = Register-ClashRemoveMulticastRouteTask
+$name = Register-VpnMulticastRouteTask
 Write-Host "Registered: $name (highest privileges)"
 exit 0

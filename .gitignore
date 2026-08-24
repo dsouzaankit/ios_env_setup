@@ -4,7 +4,9 @@ iTunes64Setup.exe
 altinstaller/
 
 # Nested third-party kit with its own .git + generated WebKit
-ign/
+ign/*
+!ign/setup-ios-webview-debug.ps1
+!ign/start-ios-webview-debug.ps1
 
 # Python
 **/__pycache__/

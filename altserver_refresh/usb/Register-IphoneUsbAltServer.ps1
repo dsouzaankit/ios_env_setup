@@ -5,10 +5,10 @@
 
 .DESCRIPTION
   Registers an interactive logon task that polls for Apple iPhone USB and, on each
-  plug-in, starts AltServer, drops Clash/mihomo TUN 224.0.0.0/4 (Bonjour), and
+  plug-in, starts AltServer, drops Mihomo/Surfshark 224.0.0.0/4 (Bonjour), and
   checks the phone subnet (WifiRestart if off-subnet).
   Same helpers as Join-AltStoreDeployPrep.ps1. Does not tap AltStore Refresh All.
-  Also registers IosEnv-Clash-RemoveMihomoMulticast (highest privileges) so the
+  Also registers IosEnv-Vpn-RemoveMulticast (highest privileges) so the
   multicast drop does not prompt UAC on every cable.
 
 .PARAMETER Unregister
@@ -41,11 +41,12 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$ScriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
-$WatchScript = Join-Path $ScriptDir 'Watch-IphoneUsbAltServer.ps1'
-$JoinPath = Join-Path $ScriptDir 'Join-AltStoreDeployPrep.ps1'
-$ClashCore = Join-Path (Split-Path -Parent $ScriptDir) 'Clash\Get-Clash.ps1'
-if (Test-Path -LiteralPath $ClashCore) { . $ClashCore }
+$UsbDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
+$RefreshRoot = Split-Path -Parent $UsbDir
+$WatchScript = Join-Path $UsbDir 'Watch-IphoneUsbAltServer.ps1'
+$JoinPath = Join-Path $RefreshRoot 'lib\Join-AltStoreDeployPrep.ps1'
+$VpnCore = Join-Path $RefreshRoot 'VpnMulticast\Get-VpnMulticast.ps1'
+if (Test-Path -LiteralPath $VpnCore) { . $VpnCore }
 
 function Stop-IosEnvUsbWatchProcesses {
     $match = @()
@@ -69,15 +70,15 @@ if ($Unregister) {
     } else {
         Write-Host "No scheduled task named $TaskName"
     }
-    if (Get-Command Unregister-ClashRemoveMulticastRouteTask -ErrorAction SilentlyContinue) {
+    if (Get-Command Unregister-VpnMulticastRouteTask -ErrorAction SilentlyContinue) {
         $removed = $false
-        try { $removed = [bool](Unregister-ClashRemoveMulticastRouteTask) } catch { $removed = $false }
+        try { $removed = [bool](Unregister-VpnMulticastRouteTask) } catch { $removed = $false }
         if ($removed) {
-            Write-Host 'Removed scheduled task: IosEnv-Clash-RemoveMihomoMulticast'
-        } elseif (Get-Command Start-ClashRegisterMulticastTaskElevated -ErrorAction SilentlyContinue) {
+            Write-Host 'Removed scheduled task: IosEnv-Vpn-RemoveMulticast (and old Clash name if present)'
+        } elseif (Get-Command Start-VpnMulticastRegisterTaskElevated -ErrorAction SilentlyContinue) {
             try {
-                [void](Start-ClashRegisterMulticastTaskElevated -Unregister)
-                Write-Host 'Removed scheduled task: IosEnv-Clash-RemoveMihomoMulticast'
+                [void](Start-VpnMulticastRegisterTaskElevated -Unregister)
+                Write-Host 'Removed scheduled task: IosEnv-Vpn-RemoveMulticast (and old Clash name if present)'
             } catch {
                 Write-Warning ("Could not remove elevated multicast task: {0}" -f $_.Exception.Message)
             }
@@ -111,16 +112,16 @@ $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interac
 if ($ShowWindow) {
     $fileArgs = "-WindowStyle Normal -NoProfile -ExecutionPolicy Bypass -File `"$WatchScript`""
     if ($SkipPhoneSubnet) { $fileArgs = "$fileArgs -SkipPhoneSubnet" }
-    $action = New-ScheduledTaskAction -Execute $pwsh -Argument $fileArgs -WorkingDirectory $ScriptDir
+    $action = New-ScheduledTaskAction -Execute $pwsh -Argument $fileArgs -WorkingDirectory $UsbDir
 } else {
-    $vbs = Join-Path $ScriptDir 'Start-IphoneUsbAltServerWatchHidden.vbs'
+    $vbs = Join-Path $UsbDir 'Start-IphoneUsbAltServerWatchHidden.vbs'
     if (-not (Test-Path -LiteralPath $vbs)) {
         throw "Missing $vbs"
     }
     $wscript = Join-Path $env:SystemRoot 'System32\wscript.exe'
     $vbsArgs = "//nologo `"$vbs`" `"$pwsh`" `"$WatchScript`""
     if ($SkipPhoneSubnet) { $vbsArgs = "$vbsArgs -SkipPhoneSubnet" }
-    $action = New-ScheduledTaskAction -Execute $wscript -Argument $vbsArgs -WorkingDirectory $ScriptDir
+    $action = New-ScheduledTaskAction -Execute $wscript -Argument $vbsArgs -WorkingDirectory $UsbDir
 }
 
 Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
@@ -147,24 +148,24 @@ Write-Host "pwsh: $pwsh"
 if ($SkipPhoneSubnet) {
     Write-Host 'Mode: AltServer only (no phone-subnet / WifiRestart)'
 } else {
-    Write-Host 'Mode: AltServer tray + Clash multicast drop + phone-subnet check on each USB plug-in'
+    Write-Host 'Mode: AltServer tray + Mihomo/Surfshark multicast drop + phone-subnet check on each USB plug-in'
 }
-if (Get-Command Start-ClashRegisterMulticastTaskElevated -ErrorAction SilentlyContinue) {
-    $mdnsName = Get-ClashRemoveMulticastRouteTaskName
+if (Get-Command Start-VpnMulticastRegisterTaskElevated -ErrorAction SilentlyContinue) {
+    $mdnsName = Get-VpnMulticastRouteTaskName
     $mdnsTask = Get-ScheduledTask -TaskName $mdnsName -ErrorAction SilentlyContinue
     if ($mdnsTask) {
         Write-Host "Already registered: $mdnsName (highest; started on each USB plug-in, no per-cable UAC)"
     } else {
         try {
-            $mdnsName = Start-ClashRegisterMulticastTaskElevated
+            $mdnsName = Start-VpnMulticastRegisterTaskElevated
             Write-Host "Registered: $mdnsName (highest; started on each USB plug-in, no per-cable UAC)"
         } catch {
             Write-Warning ("Could not register elevated multicast task ({0}). USB plug-in will prompt UAC to drop 224.0.0.0/4." -f $_.Exception.Message)
         }
     }
 }
-Write-Host ("Log: {0}" -f (Join-Path $ScriptDir 'iphone-usb-altserver.log'))
-Write-Host ("Remove: pwsh -File `"{0}`" -Unregister" -f (Join-Path $ScriptDir 'Register-IphoneUsbAltServer.ps1'))
+Write-Host ("Log: {0}" -f (Join-Path $RefreshRoot 'iphone-usb-altserver.log'))
+Write-Host ("Remove: pwsh -File `"{0}`" -Unregister" -f (Join-Path $UsbDir 'Register-IphoneUsbAltServer.ps1'))
 
 if (-not $NoStart) {
     Start-ScheduledTask -TaskName $TaskName -ErrorAction Stop

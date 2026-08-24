@@ -5,8 +5,9 @@
 
 .DESCRIPTION
   Polls PnP for Apple USB. On a rising edge (unplugged -> plugged), waits for
-  usbmux to settle, then runs Invoke-AltServerIfNeeded.ps1 and
-  Invoke-AltServerPhoneSubnetIfNeeded.ps1 (same pair as Join-AltStoreDeployPrep).
+  usbmux to settle, then runs Invoke-AltServerIfNeeded.ps1, Mihomo/Surfshark
+  multicast drop, and Invoke-AltServerPhoneSubnetIfNeeded.ps1 (same pair as
+  Join-AltStoreDeployPrep).
   Stays idle while the phone remains connected. Does not tap AltStore Refresh All.
 
   Direct run is a foreground loop (Ctrl+C to stop). The logon task from
@@ -36,14 +37,15 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$ScriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
-$JoinPath = Join-Path $ScriptDir 'Join-AltStoreDeployPrep.ps1'
+$UsbDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
+$RefreshRoot = Split-Path -Parent $UsbDir
+$JoinPath = Join-Path $RefreshRoot 'lib\Join-AltStoreDeployPrep.ps1'
 if (-not (Test-Path -LiteralPath $JoinPath)) {
     throw "Missing $JoinPath"
 }
 . $JoinPath
 
-$LogDir = $ScriptDir
+$LogDir = $RefreshRoot
 $LogFile = Join-Path $LogDir 'iphone-usb-altserver.log'
 $script:UsbLogSessionMarker = '==== USB connect '
 
@@ -101,13 +103,14 @@ function Test-IphoneUsbConnected {
 function Invoke-UsbAltServerChild {
     param(
         [Parameter(Mandatory = $true)][string] $PwshExe,
-        [Parameter(Mandatory = $true)][string] $ScriptPath
+        [Parameter(Mandatory = $true)][string] $ScriptPath,
+        [string[]] $ExtraArgs = @()
     )
     $prev = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     $code = 0
     try {
-        & $PwshExe -NoProfile -ExecutionPolicy Bypass -File $ScriptPath -NoWaitEnter 2>&1 |
+        & $PwshExe -NoProfile -ExecutionPolicy Bypass -File $ScriptPath -NoWaitEnter @ExtraArgs 2>&1 |
             ForEach-Object {
                 $s = [string]$_
                 Write-Host $s
@@ -133,26 +136,29 @@ function Invoke-UsbAltServerPrep {
         Write-UsbLog 'pwsh (PowerShell 7) not found; skip'
         return 1
     }
-    $ifNeeded = Join-Path $script:IosAltRefreshDir 'Invoke-AltServerIfNeeded.ps1'
-    $subnet = Join-Path $script:IosAltRefreshDir 'Invoke-AltServerPhoneSubnetIfNeeded.ps1'
+    $ifNeeded = Join-Path $script:IosAltRefreshDir 'sideload\Invoke-AltServerIfNeeded.ps1'
+    $subnet = Join-Path $script:IosAltRefreshDir 'lan\Invoke-AltServerPhoneSubnetIfNeeded.ps1'
     if (-not (Test-Path -LiteralPath $ifNeeded)) {
         Write-UsbLog ("missing {0}" -f $ifNeeded)
         return 1
     }
-    Write-UsbLog 'Ensuring AltServer tray...'
-    $altCode = Invoke-UsbAltServerChild -PwshExe $pwsh -ScriptPath $ifNeeded
-    Write-UsbLog ("AltServer helper exit {0}" -f $altCode)
-    Write-UsbLog 'Clash/mihomo Bonjour (AltStore finds AltServer)...'
-    Invoke-IosAltStoreClashMdns
-    if ($SkipPhoneSubnet) { return $altCode }
-    if (-not (Test-Path -LiteralPath $subnet)) {
-        Write-UsbLog ("missing {0}" -f $subnet)
-        return 1
+    $subnetCode = $null
+    if (-not $SkipPhoneSubnet) {
+        if (-not (Test-Path -LiteralPath $subnet)) {
+            Write-UsbLog ("missing {0}" -f $subnet)
+            return 1
+        }
+        Write-UsbLog 'Phone LAN vs PC/AltServer subnet (USB pcapd)...'
+        $subnetCode = Invoke-UsbAltServerChild -PwshExe $pwsh -ScriptPath $subnet
+        Write-UsbLog ("Subnet helper exit {0}" -f $subnetCode)
     }
-    Write-UsbLog 'Phone LAN vs PC/AltServer subnet (USB pcapd)...'
-    $code = Invoke-UsbAltServerChild -PwshExe $pwsh -ScriptPath $subnet
-    Write-UsbLog ("Subnet helper exit {0}" -f $code)
-    return $code
+    Write-UsbLog 'Mihomo/Surfshark Bonjour (AltStore finds AltServer)...'
+    Invoke-IosAltStoreVpnMdns
+    Write-UsbLog 'Restarting AltServer so Bonjour matches this LAN...'
+    $altCode = Invoke-UsbAltServerChild -PwshExe $pwsh -ScriptPath $ifNeeded -ExtraArgs @('-ForceRestart')
+    Write-UsbLog ("AltServer helper exit {0}" -f $altCode)
+    if ($SkipPhoneSubnet) { return $altCode }
+    return $subnetCode
 }
 
 function Invoke-UsbAltServerPrepWithRetries {

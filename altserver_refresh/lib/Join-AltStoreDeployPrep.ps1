@@ -5,7 +5,7 @@
 
 .DESCRIPTION
   Invoke-AltStoreDeployPrep starts AltServer (tray / interactive desktop) and
-  clears Clash TUN multicast so AltStore can see AltServer. It does **not** run
+  drops Mihomo/Surfshark 224.0.0.0/4 so AltStore can see AltServer. It does **not** run
   the USB pcapd phone-subnet check by default — Watch-IphoneUsbAltServer already
   does that on plug-in. Pass -CheckPhoneSubnet to run it here. Missing USB /
   no Wi-Fi IP only warns - iCloud AltStore install can still proceed. USB
@@ -20,21 +20,20 @@
 
 .EXAMPLE
   $join = @(
-      (Join-Path $ProjectRoot 'env_setup\altserver_refresh\Join-AltStoreDeployPrep.ps1')
-      'P:\all_scripts\iOS apps\env_setup\altserver_refresh\Join-AltStoreDeployPrep.ps1'
+      (Join-Path $ProjectRoot 'env_setup\altserver_refresh\lib\Join-AltStoreDeployPrep.ps1')
+      'P:\all_scripts\iOS apps\env_setup\altserver_refresh\lib\Join-AltStoreDeployPrep.ps1'
   ) | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
   if ($join) { . $join; Invoke-AltStoreDeployPrep }
   # Optional: Invoke-AltStoreDeployPrep -CheckPhoneSubnet
 #>
 
-# $PSScriptRoot is this file when dotted (PS 3+). $MyInvocation.MyCommand.Path
-# is often the *caller* (deploy.ps1) and would miss Get-AltServer.ps1.
+# $PSScriptRoot is this file (lib\) when dotted (PS 3+). Kit root is the parent.
 $script:IosAltRefreshDir = if ($PSScriptRoot) {
-    $PSScriptRoot
+    Split-Path -Parent $PSScriptRoot
 } elseif ($PSCommandPath) {
-    Split-Path -Parent $PSCommandPath
+    Split-Path -Parent (Split-Path -Parent $PSCommandPath)
 } else {
-    Split-Path -Parent $MyInvocation.MyCommand.Path
+    Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 }
 
 function Get-IosAltStorePrepPwsh {
@@ -55,7 +54,8 @@ function Get-IosAltStorePrepPwsh {
 function Invoke-IosAltStorePrepChild {
     param(
         [Parameter(Mandatory = $true)][string] $PwshExe,
-        [Parameter(Mandatory = $true)][string] $ScriptPath
+        [Parameter(Mandatory = $true)][string] $ScriptPath,
+        [string[]] $ExtraArgs = @()
     )
     $prev = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
@@ -63,7 +63,7 @@ function Invoke-IosAltStorePrepChild {
     try {
         # Write-Host so child stdout is not part of this function's return value
         # (otherwise "$code = Invoke-..." becomes the 'Running (tray): ...' line).
-        & $PwshExe -NoProfile -ExecutionPolicy Bypass -File $ScriptPath -NoWaitEnter 2>&1 |
+        & $PwshExe -NoProfile -ExecutionPolicy Bypass -File $ScriptPath -NoWaitEnter @ExtraArgs 2>&1 |
             ForEach-Object { Write-Host ([string]$_) }
         if ($null -ne $LASTEXITCODE) { $code = [int]$LASTEXITCODE }
     } catch {
@@ -91,52 +91,53 @@ function Get-IosAltStorePrepExitCode {
     return 1
 }
 
-function Get-IosAltStoreClashCore {
-    $root = Split-Path -Parent $script:IosAltRefreshDir
-    $core = Join-Path $root 'Clash\Get-Clash.ps1'
+function Get-IosAltStoreVpnMulticastCore {
+    $core = Join-Path $script:IosAltRefreshDir 'VpnMulticast\Get-VpnMulticast.ps1'
     if ($core -and (Test-Path -LiteralPath $core)) { return $core }
     return $null
 }
 
-function Invoke-IosAltStoreClashMdns {
-    $core = Get-IosAltStoreClashCore
+function Invoke-IosAltStoreVpnMdns {
+    $core = Get-IosAltStoreVpnMulticastCore
     if (-not $core) { return }
     . $core
-    if (-not (Test-ClashRunning)) { return }
-    Write-Host '[altserver] Clash/mihomo is running. Dropping TUN 224.0.0.0/4 so AltStore can find AltServer (Bonjour).'
-    if (Test-ClashProcessElevated) {
-        [void](Invoke-ClashFixBonjourAfterMulticast)
+    $clashOn = Test-ClashRunning
+    $hijack = Test-LanMulticastHijackPresent
+    if (-not $clashOn -and -not $hijack) { return }
+    Write-Host '[altserver] Dropping 224.0.0.0/4 on Mihomo/Surfshark so AltStore Bonjour stays on Wi-Fi.'
+    if (Test-VpnProcessElevated) {
+        [void](Invoke-VpnFixBonjourAfterMulticast)
         return
     }
     $started = $false
-    if (Get-Command Start-ClashRemoveMulticastRouteTask -ErrorAction SilentlyContinue) {
-        $started = [bool](Start-ClashRemoveMulticastRouteTask)
+    if (Get-Command Start-VpnMulticastRouteTask -ErrorAction SilentlyContinue) {
+        $started = [bool](Start-VpnMulticastRouteTask)
     }
-    if (-not $started -and (Get-Command Register-ClashRemoveMulticastRouteTask -ErrorAction SilentlyContinue)) {
+    if (-not $started -and (Get-Command Register-VpnMulticastRouteTask -ErrorAction SilentlyContinue)) {
         try {
-            $mdnsName = Register-ClashRemoveMulticastRouteTask
+            $mdnsName = Register-VpnMulticastRouteTask
             Write-Host ("[altserver] Registered elevated task {0}" -f $mdnsName)
-            $started = [bool](Start-ClashRemoveMulticastRouteTask)
+            $started = [bool](Start-VpnMulticastRouteTask)
         } catch {
             Write-Warning ("[altserver] Could not register elevated multicast task: {0}" -f $_.Exception.Message)
         }
     }
     if ($started) {
         Start-Sleep -Seconds 2
-        if (Test-ClashMulticastRoutePresent) {
-            Write-Warning '[altserver] Elevated multicast task ran; 224.0.0.0/4 is still on Mihomo.'
+        if (Test-LanMulticastHijackPresent) {
+            Write-Warning '[altserver] Elevated multicast task ran; 224.0.0.0/4 is still on Mihomo or Surfshark.'
         } else {
-            Write-Host '[altserver] Mihomo multicast route clear. Retry AltStore Refresh All if it said AltServer not found.'
+            Write-Host '[altserver] VPN/TUN multicast route clear. Retry AltStore Refresh All if it said AltServer not found.'
         }
         return
     }
-    Write-Host '[altserver] Need elevation to drop Mihomo 224.0.0.0/4 (approve UAC)...'
-    [void](Start-ClashRemoveMulticastRouteElevated)
-    if (Test-ClashMulticastRoutePresent) {
-        $script = Get-ClashRemoveMulticastRouteScript
+    Write-Host '[altserver] Need elevation to drop 224.0.0.0/4 (approve UAC)...'
+    [void](Start-VpnMulticastRouteElevated)
+    if (Test-LanMulticastHijackPresent) {
+        $script = Get-VpnMulticastRouteScript
         Write-Warning ("[altserver] AltStore will say AltServer not found until you run elevated: pwsh -File `"{0}`"" -f $script)
     } else {
-        Write-Host '[altserver] Mihomo multicast route removed. Retry AltStore Refresh All.'
+        Write-Host '[altserver] VPN/TUN multicast route removed. Retry AltStore Refresh All.'
     }
 }
 
@@ -148,8 +149,8 @@ function Invoke-AltStoreDeployPrep {
 
     Write-Host '==> AltStore deploy prep (AltServer tray; subnet is USB plug-in)'
     $dir = $script:IosAltRefreshDir
-    $ifNeeded = Join-Path $dir 'Invoke-AltServerIfNeeded.ps1'
-    $subnet = Join-Path $dir 'Invoke-AltServerPhoneSubnetIfNeeded.ps1'
+    $ifNeeded = Join-Path $dir 'sideload\Invoke-AltServerIfNeeded.ps1'
+    $subnet = Join-Path $dir 'lan\Invoke-AltServerPhoneSubnetIfNeeded.ps1'
     if (-not (Test-Path -LiteralPath $ifNeeded)) {
         Write-Warning "[altserver] Missing $ifNeeded (Join loaded from '$dir')"
         return
@@ -161,8 +162,31 @@ function Invoke-AltStoreDeployPrep {
         return
     }
 
-    Write-Host '[altserver] Ensuring AltServer tray (child pwsh)...'
-    $altCode = Get-IosAltStorePrepExitCode (Invoke-IosAltStorePrepChild -PwshExe $pwsh -ScriptPath $ifNeeded)
+    $wantSubnet = $CheckPhoneSubnet -and -not $SkipPhoneSubnet
+    if ($wantSubnet) {
+        if (-not (Test-Path -LiteralPath $subnet)) {
+            Write-Warning "[altserver] Missing $subnet"
+        } else {
+            Write-Host '[altserver] Phone LAN vs PC/AltServer subnet (USB pcapd)...'
+            $code = Get-IosAltStorePrepExitCode (Invoke-IosAltStorePrepChild -PwshExe $pwsh -ScriptPath $subnet)
+            if ($code -eq 0) {
+                Write-Host '[altserver] Phone and PC/AltServer share a subnet (Wi-Fi sideload/refresh possible).'
+            } elseif ($code -eq 2 -or $code -eq 4) {
+                Write-Host ("[altserver] Phone subnet not confirmed (exit {0}). iCloud AltStore install still works. USB sideload needs the phone on this PC's Wi-Fi." -f $code) -ForegroundColor DarkYellow
+            } else {
+                Write-Warning ("[altserver] Phone-subnet refresh failed (exit {0})." -f $code)
+            }
+        }
+    } elseif ($SkipPhoneSubnet) {
+        Write-Host '[altserver] Skipping phone-subnet check (-SkipPhoneSubnet).'
+    } else {
+        Write-Host '[altserver] Skipping phone-subnet check (USB plug-in already does this; -CheckPhoneSubnet to run).'
+    }
+
+    Invoke-IosAltStoreVpnMdns
+
+    Write-Host '[altserver] Restarting AltServer so Bonjour advertises this PC Wi-Fi address...'
+    $altCode = Get-IosAltStorePrepExitCode (Invoke-IosAltStorePrepChild -PwshExe $pwsh -ScriptPath $ifNeeded -ExtraArgs @('-ForceRestart'))
     if ($altCode -eq 0) {
         Write-Host '[altserver] AltServer is usable (tray / this desktop).'
     } elseif ($altCode -eq 2) {
@@ -170,32 +194,4 @@ function Invoke-AltStoreDeployPrep {
     } else {
         Write-Warning ("[altserver] Tray start did not confirm usable (exit {0}). Check the notification area / hidden icons (^)." -f $altCode)
     }
-
-    Invoke-IosAltStoreClashMdns
-
-    $wantSubnet = $CheckPhoneSubnet -and -not $SkipPhoneSubnet
-    if (-not $wantSubnet) {
-        if ($SkipPhoneSubnet) {
-            Write-Host '[altserver] Skipping phone-subnet check (-SkipPhoneSubnet).'
-        } else {
-            Write-Host '[altserver] Skipping phone-subnet check (USB plug-in already does this; -CheckPhoneSubnet to run).'
-        }
-        return
-    }
-    if (-not (Test-Path -LiteralPath $subnet)) {
-        Write-Warning "[altserver] Missing $subnet"
-        return
-    }
-
-    Write-Host '[altserver] Phone LAN vs PC/AltServer subnet (USB pcapd)...'
-    $code = Get-IosAltStorePrepExitCode (Invoke-IosAltStorePrepChild -PwshExe $pwsh -ScriptPath $subnet)
-    if ($code -eq 0) {
-        Write-Host '[altserver] Phone and PC/AltServer share a subnet (Wi-Fi sideload/refresh possible).'
-        return
-    }
-    if ($code -eq 2 -or $code -eq 4) {
-        Write-Host ("[altserver] Phone subnet not confirmed (exit {0}). iCloud AltStore install still works. USB sideload needs the phone on this PC's Wi-Fi." -f $code) -ForegroundColor DarkYellow
-        return
-    }
-    Write-Warning ("[altserver] Phone-subnet refresh failed (exit {0})." -f $code)
 }

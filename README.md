@@ -6,9 +6,9 @@ Shared Windows helpers for iOS sideloading / AltServer / phone LAN. Used as a Gi
 
 | Path | Role |
 |------|------|
-| `altserver_refresh/` | Locate/start AltServer; phone Wi-Fi IPv4 via USB + USB pcapd; if off-subnet, tcp/23-probe then WifiRestart the phone AP (preferred) or this PC’s gateway |
-| `Clash/` | Clash Verge / mihomo profiles + optional elevated drop of TUN `224.0.0.0/4` for `.local` / other mDNS ([Clash/README.md](Clash/README.md)). Phone-IP probe does not need this. |
-| `setup-ios-webview-debug.ps1` / `start-ios-webview-debug.ps1` | WKWebView inspector helpers (kit is local under `ign/`, not in this repo) |
+| `altserver_refresh/` | Locate/start AltServer; phone Wi-Fi IPv4 via USB + USB pcapd; WifiRestart if off-subnet. Layout: `lib/`, `sideload/`, `usb/`, `lan/`, `VpnMulticast/` ([altserver_refresh/README.md](altserver_refresh/README.md)) |
+| `Clash/` | Clash Verge / mihomo **profiles** only ([Clash/README.md](Clash/README.md)). Multicast drop is `altserver_refresh/VpnMulticast/`. |
+| `ign/setup-ios-webview-debug.ps1` / `ign/start-ios-webview-debug.ps1` | WKWebView inspector helpers (kit is local under `ign/`, not in this repo) |
 
 Apple iCloud/iTunes installers and `altinstaller/` stay on the machine only (gitignored).
 
@@ -17,12 +17,12 @@ Clone into Loop Segments as submodule **`env_setup/`** (`git clone --recurse-sub
 ## AltServer
 
 ```powershell
-pwsh -File .\altserver_refresh\Invoke-AltServerIfNeeded.ps1
-pwsh -File .\altserver_refresh\Invoke-AltServerPhoneSubnetIfNeeded.ps1
+pwsh -File .\altserver_refresh\sideload\Invoke-AltServerIfNeeded.ps1
+pwsh -File .\altserver_refresh\lan\Invoke-AltServerPhoneSubnetIfNeeded.ps1
 ```
 
 Direct runs wait for Enter. Child callers: `-NoWaitEnter`. See `altserver_refresh/README.md`.
 
-To run those helpers on each iPhone USB plug-in: `pwsh -File .\altserver_refresh\Register-IphoneUsbAltServer.ps1` (creates `IosEnv-AltServer-UsbWatch` + `IosEnv-Clash-RemoveMihomoMulticast`; AltServer tray start uses `IosEnv-AltServer-TrayKick`). Task list: `altserver_refresh/README.md` (Scheduled tasks).
+To run those helpers on each iPhone USB plug-in: `pwsh -File .\altserver_refresh\usb\Register-IphoneUsbAltServer.ps1` (creates `IosEnv-AltServer-UsbWatch` + `IosEnv-Vpn-RemoveMulticast`; AltServer tray start uses `IosEnv-AltServer-TrayKick`). Task list: `altserver_refresh/README.md` (Scheduled tasks).
 
-AltStore IPA neighbors (`ios_3d_loop_segments\deploy.ps1`, `web_auto_parking\deploy.ps1`) dot-source `altserver_refresh\Join-AltStoreDeployPrep.ps1` so deploy starts AltServer (phone-subnet check stays on USB plug-in). Pythonista zip deploys do not.
+AltStore IPA neighbors (`ios_3d_loop_segments\deploy.ps1`, `web_auto_parking\deploy.ps1`) dot-source `altserver_refresh\lib\Join-AltStoreDeployPrep.ps1` so deploy starts AltServer (phone-subnet check stays on USB plug-in). Pythonista zip deploys do not.

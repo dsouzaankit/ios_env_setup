@@ -12,9 +12,19 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$generate = Join-Path $PSScriptRoot "ios-safari-remote-debug-kit\src\generate.ps1"
-if (-not (Test-Path $generate)) {
-    Write-Host "Missing kit. Clone into env_setup\ios-safari-remote-debug-kit first."
+$kitRoot = $null
+foreach ($candidate in @(
+        (Join-Path $PSScriptRoot 'ios-safari-remote-debug-kit')
+        (Join-Path (Split-Path $PSScriptRoot) 'ios-safari-remote-debug-kit')
+    )) {
+    if (Test-Path (Join-Path $candidate 'src\generate.ps1')) {
+        $kitRoot = $candidate
+        break
+    }
+}
+$generate = if ($kitRoot) { Join-Path $kitRoot 'src\generate.ps1' } else { $null }
+if (-not $generate) {
+    Write-Host "Missing kit. Clone into env_setup\ign\ios-safari-remote-debug-kit first."
     exit 1
 }
 
@@ -31,7 +41,7 @@ if ($null -ne $FetchWebInspector) {
 $code = $LASTEXITCODE
 if ($code -ne 0 -and $null -eq $FetchWebInspector) {
     # Default generate exits 1 when WebKit already exists — that is OK.
-    if (Test-Path (Join-Path $PSScriptRoot "ios-safari-remote-debug-kit\src\WebKit")) {
+    if (Test-Path (Join-Path $kitRoot "src\WebKit")) {
         Write-Host "WebKit already present. Use -FetchWebInspector `$true to refresh."
         exit 0
     }
@@ -39,4 +49,4 @@ if ($code -ne 0 -and $null -eq $FetchWebInspector) {
 }
 if ($code -ne 0) { exit $code }
 
-Write-Host "Done. Start with: .\start-ios-webview-debug.ps1"
+Write-Host "Done. Start with: .\ign\start-ios-webview-debug.ps1"
