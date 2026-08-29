@@ -123,3 +123,5 @@ AltStore **Refresh All** saying **AltServer not found** with AltServer already i
 pwsh -File .\VpnMulticast\Remove-VpnMulticastRoute.ps1
 pwsh -File .\sideload\Invoke-AltServerIfNeeded.ps1 -NoWaitEnter -ForceRestart
 ```
+
+**Refresh All** saying **AltServer could not establish connection to AltStore** is not the same as “not found.” Discovery already worked; the TCP hop to AltStore on the phone failed. Tap **Refresh All** again a few times — that has cleared it here. USB is still the fallback if retries do not.
