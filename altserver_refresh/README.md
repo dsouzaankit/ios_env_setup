@@ -63,7 +63,7 @@ if ($join) { . $join; Invoke-AltStoreDeployPrep }
 # Optional: Invoke-AltStoreDeployPrep -CheckPhoneSubnet
 ```
 
-`-SkipAltStorePrep` on those deploy scripts skips this. Pythonista zip deploys (`bike_train_transit`, `quick_open_apps`, `iOS-SOCKS-Server`) do not use AltStore.
+`-EnsureAltStorePrep` on those deploy scripts runs this (default skips for SideStore). `-SkipAltStorePrep` remains a no-op alias for the default. Pythonista zip deploys (`bike_train_transit`, `quick_open_apps`, `iOS-SOCKS-Server`) do not use AltStore.
 
 ## Scheduled tasks (this repo)
 
