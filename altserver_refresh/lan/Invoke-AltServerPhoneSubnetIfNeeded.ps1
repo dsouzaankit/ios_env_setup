@@ -221,16 +221,29 @@ function Get-PcLanIdentities {
 }
 
 function Get-IphoneLanIpv4 {
-    param([Parameter(Mandatory = $true)][string] $PyExe)
+    param(
+        [Parameter(Mandatory = $true)][string] $PyExe,
+        [string[]] $ExcludeIps = @()
+    )
     if (-not (Test-Path -LiteralPath $GetIpPy)) {
         throw "Missing $GetIpPy"
     }
     $prev = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     $lines = [System.Collections.Generic.List[string]]::new()
+    $pyArgs = [System.Collections.Generic.List[string]]::new()
+    [void]$pyArgs.Add('-3.12')
+    [void]$pyArgs.Add('-u')
+    [void]$pyArgs.Add($GetIpPy)
+    foreach ($ip in @($ExcludeIps)) {
+        if (-not [string]::IsNullOrWhiteSpace($ip)) {
+            [void]$pyArgs.Add('--exclude-ip')
+            [void]$pyArgs.Add($ip.Trim())
+        }
+    }
     try {
         # -u so stderr progress is not buffered; stream so the minute-long probe is not silent.
-        & $PyExe -3.12 -u $GetIpPy 2>&1 | ForEach-Object {
+        & $PyExe @pyArgs 2>&1 | ForEach-Object {
             $s = [string]$_
             if ([string]::IsNullOrWhiteSpace($s)) { return }
             [void]$lines.Add($s)
@@ -424,7 +437,10 @@ try {
     $knownRouterIps = @(Get-KnownRouterIps -ScriptsRoot $RebootScriptsRoot)
     $pcLans = @(Get-PcLanIdentities)
     if ($pcLans.Count -eq 0) {
-        throw 'No PC LAN IPv4 found (AltServer has nothing to share a subnet with).'
+        # Soft: recover treats exit 4 like no phone IP and falls back to :8765 wait / off-subnet reboot.
+        # Do not throw — the outer catch would map that to hard exit 1 and abort companion mount recover.
+        Write-Warning '[altserver-subnet] No PC LAN IPv4 found (AltServer has nothing to share a subnet with; Clash TUN / AP drop?). Falling back.'
+        Exit-WithEnter 4
     }
     Write-Host '[altserver-subnet] PC / AltServer LAN:' -ForegroundColor Cyan
     foreach ($lan in $pcLans) {
@@ -450,6 +466,15 @@ try {
             Write-Host ('[altserver-subnet] Ignoring pcapd IP {0} (wifi_dx_common ROUTER_IP, not the phone).' -f $Raw.Ip) -ForegroundColor DarkGray
             $Raw.Ip = $null
         }
+        if ($Raw.Ip) {
+            foreach ($lan in $pcLans) {
+                if ($Raw.Ip -eq $lan.Ip) {
+                    Write-Host ('[altserver-subnet] Ignoring pcapd IP {0} (this PC LAN address, not the phone).' -f $Raw.Ip) -ForegroundColor DarkGray
+                    $Raw.Ip = $null
+                    break
+                }
+            }
+        }
         return $Raw
     }
 
@@ -461,7 +486,8 @@ try {
         return ''
     }
 
-    $probe = Resolve-PhoneProbe (Get-IphoneLanIpv4 -PyExe $py)
+    $excludePcIps = @($pcLans | ForEach-Object { [string]$_.Ip } | Where-Object { $_ })
+    $probe = Resolve-PhoneProbe (Get-IphoneLanIpv4 -PyExe $py -ExcludeIps $excludePcIps)
     Show-PhoneProbe $probe
     if ($probe.ExitCode -eq 2) {
         Write-Host '[altserver-subnet] No USB iPhone (plug in, Trust This Computer, unlock).' -ForegroundColor Yellow
@@ -582,7 +608,7 @@ Phone IP: $(if ($phoneHostIp) { $phoneHostIp } else { '(unknown)' })
             Write-Host ('[altserver-subnet] Re-probe ({0}s left; last {1}; want PC subnet)...' -f $left, $(if ($previousIp) { $previousIp } else { '(none)' }))
             Start-Sleep -Seconds $PollSec
             $pcLans = @(Get-PcLanIdentities)
-            $probe = Resolve-PhoneProbe (Get-IphoneLanIpv4 -PyExe $py)
+            $probe = Resolve-PhoneProbe (Get-IphoneLanIpv4 -PyExe $py -ExcludeIps $excludePcIps)
             if (-not $probe.Ip) {
                 $hostIp = Get-PhoneHostIp $probe $lastKnownIp
                 if ($hostIp) { $lastKnownIp = $hostIp }
@@ -619,7 +645,7 @@ iOS rejoined that SSID (DHCP may change, e.g. .95 -> .29). Stopping this wait an
         if (-not $gotFresh) {
             Write-Warning '[altserver-subnet] Timed out waiting for a new phone IP - re-checking.'
         }
-        $probe = Resolve-PhoneProbe (Get-IphoneLanIpv4 -PyExe $py)
+        $probe = Resolve-PhoneProbe (Get-IphoneLanIpv4 -PyExe $py -ExcludeIps $excludePcIps)
         Show-PhoneProbe $probe
         $lastKnownIp = Get-PhoneHostIp $probe $lastKnownIp
     }

@@ -9,6 +9,8 @@ host. AP identity for WifiRestart comes from wifi_dx_common ROUTER_IP, not
 pcapd. Works across subnets; no admin tunneld. Does not use Bonjour/mobdev2.
 
 Stdout: JSON {"ok": true, "ip": "10.0.100.10", "source": "usb-pcapd", ...}
+Pass ``--exclude-ip <addr>`` (repeatable) or ``LOOP_SEGMENTS_EXCLUDE_LAN_IPS`` so this
+PC's LAN addresses are never chosen (pcapd often sees the PC as a peer).
 Exit:
   0  got IPv4
   2  no USB iPhone
@@ -18,13 +20,19 @@ Exit:
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import ipaddress
 import json
+import os
 import subprocess
 import sys
 from collections import Counter
 from typing import Any
+
+# Filled from --exclude-ip / LOOP_SEGMENTS_EXCLUDE_LAN_IPS (this PC's LAN addresses).
+# pcapd on the phone often sees the PC as dst/src; that must not be reported as the phone.
+_EXCLUDE_IPS: set[str] = set()
 
 
 def _run_pymd(args: list[str], timeout: float = 20.0) -> tuple[int, str, str]:
@@ -220,6 +228,8 @@ def _mac_bytes(value: Any) -> bytes | None:
 
 def _as_phone_ip(ip: str | None) -> str | None:
     if not ip or not _is_lan_unicast(ip) or _is_likely_router_ip(ip):
+        return None
+    if ip in _EXCLUDE_IPS:
         return None
     return ip
 
@@ -560,7 +570,35 @@ def _assoc_brief(assoc: dict[str, Any]) -> str:
     return "wifi-ioregistry=unknown"
 
 
+def _load_exclude_ips(cli: list[str] | None = None) -> set[str]:
+    out: set[str] = set()
+    for raw in cli or []:
+        ip = (raw or "").strip()
+        if ip:
+            out.add(ip)
+    env = (os.environ.get("LOOP_SEGMENTS_EXCLUDE_LAN_IPS") or "").strip()
+    if env:
+        for part in env.replace(";", ",").split(","):
+            ip = part.strip()
+            if ip:
+                out.add(ip)
+    return out
+
+
 def main() -> int:
+    parser = argparse.ArgumentParser(description="USB iPhone Wi-Fi IPv4 via pcapd")
+    parser.add_argument(
+        "--exclude-ip",
+        action="append",
+        default=[],
+        help="IPv4 to never treat as the phone (pass each PC LAN address)",
+    )
+    args = parser.parse_args()
+    global _EXCLUDE_IPS
+    _EXCLUDE_IPS = _load_exclude_ips(list(args.exclude_ip or []))
+    if _EXCLUDE_IPS:
+        _log("Excluding PC/other LAN IPs from pcapd phone pick: " + ", ".join(sorted(_EXCLUDE_IPS)))
+
     _log("USB usbmux list...")
     usb_code, usb_out, usb_err = _run_pymd(["usbmux", "list"], timeout=8.0)
     if usb_code != 0:
