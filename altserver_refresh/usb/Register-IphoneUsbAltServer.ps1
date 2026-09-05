@@ -12,7 +12,8 @@
   multicast drop does not prompt UAC on every cable.
 
 .PARAMETER Unregister
-  Remove the scheduled task (does not kill a watcher that is already running).
+  Remove the scheduled task and stop any leftover Watch-IphoneUsbAltServer /
+  wscript processes (unregister alone used to leave a running watcher).
 
 .PARAMETER ShowWindow
   Run the watcher in a visible console (default is hidden).
@@ -65,11 +66,14 @@ function Stop-IosEnvUsbWatchProcesses {
 if ($Unregister) {
     $existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
     if ($existing) {
+        try { Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue } catch {}
         Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
         Write-Host "Removed scheduled task: $TaskName"
     } else {
         Write-Host "No scheduled task named $TaskName"
     }
+    Stop-IosEnvUsbWatchProcesses
+    Write-Host 'Stopped any leftover Watch-IphoneUsbAltServer / wscript processes.'
     if (Get-Command Unregister-VpnMulticastRouteTask -ErrorAction SilentlyContinue) {
         $removed = $false
         try { $removed = [bool](Unregister-VpnMulticastRouteTask) } catch { $removed = $false }

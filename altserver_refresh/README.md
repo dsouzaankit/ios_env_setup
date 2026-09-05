@@ -88,7 +88,7 @@ Re-register UsbWatch only if you still want automatic AltServer + WifiRestart on
 
 ```powershell
 Get-ScheduledTask -TaskName 'IosEnv-*' | Select-Object TaskName, State
-pwsh -File .\usb\Register-IphoneUsbAltServer.ps1 -Unregister   # UsbWatch + VPN multicast; not TrayKick
+pwsh -File .\usb\Register-IphoneUsbAltServer.ps1 -Unregister   # UsbWatch + VPN multicast; not TrayKick (also stops leftover Watch processes)
 ```
 
 `TrayKick` is recreated the next time AltServer is started from these helpers. It does not need to sit in Task Scheduler until then.
