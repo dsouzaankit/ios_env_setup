@@ -23,6 +23,6 @@ pwsh -File .\altserver_refresh\lan\Invoke-AltServerPhoneSubnetIfNeeded.ps1
 
 Direct runs wait for Enter. Child callers: `-NoWaitEnter`. See `altserver_refresh/README.md`.
 
-To run those helpers on each iPhone USB plug-in: `pwsh -File .\altserver_refresh\usb\Register-IphoneUsbAltServer.ps1` (creates `IosEnv-AltServer-UsbWatch` + `IosEnv-Vpn-RemoveMulticast`; AltServer tray start uses `IosEnv-AltServer-TrayKick`). Task list: `altserver_refresh/README.md` (Scheduled tasks).
+To run those helpers on each iPhone USB plug-in: `pwsh -File .\altserver_refresh\usb\Register-IphoneUsbAltServer.ps1` (creates `IosEnv-AltServer-UsbWatch` + `IosEnv-Vpn-RemoveMulticast`; AltServer tray start uses `IosEnv-AltServer-TrayKick`). **SideStore** users can unregister those — refresh does not need AltServer (`altserver_refresh/README.md` Scheduled tasks).
 
 AltStore IPA neighbors (`ios_3d_loop_segments\deploy.ps1`, `web_auto_parking\deploy.ps1`) can opt into `altserver_refresh\lib\Join-AltStoreDeployPrep.ps1` via **`-EnsureAltStorePrep`** (default skips — SideStore). Phone-subnet check stays on USB plug-in. Pythonista zip deploys do not.

@@ -69,6 +69,17 @@ if ($join) { . $join; Invoke-AltStoreDeployPrep }
 
 All names use the **`IosEnv-`** prefix (not Loop Segments). Loop Segments may still register its own `LoopSegments-AltServer` logon task via `windows\sideload\Register-AltServerAtLogon.ps1`; that is a different repo.
 
+**SideStore (no AltServer):** refresh is on-device over Wi‑Fi with LocalDevVPN — no PC Bonjour, no USB, no AltServer tray. Unregister the logon/USB tasks (done on this PC when SideStore Wi‑Fi refresh was confirmed):
+
+```powershell
+pwsh -File .\usb\Register-IphoneUsbAltServer.ps1 -Unregister
+# UsbWatch (IosEnv-AltServer-UsbWatch) + IosEnv-Vpn-RemoveMulticast
+pwsh -File ..\..\ios_3d_loop_segments\windows\sideload\Register-AltServerAtLogon.ps1 -Unregister
+# LoopSegments-AltServer logon tray — not UsbWatch
+```
+
+Re-register UsbWatch only if you still want automatic AltServer + WifiRestart on cable plug-in (AltStore, or Loop Segments LAN without companion). `lan\` helpers stay; they are not startup tasks. `TrayKick` is on-demand, not logon.
+
 | Task | Created by | Privileges | When it runs | What it does |
 |------|------------|------------|--------------|--------------|
 | `IosEnv-AltServer-TrayKick` | `lib\Get-AltServer.ps1` on start (dummy 2099 trigger; `Start-ScheduledTask`) | Interactive, Limited | On demand when AltServer must appear in the tray | Launches `AltServer.exe` the same way as Start Menu / double-click. Replaces leftover `LoopSegments-AltServer-TrayKick`. |
