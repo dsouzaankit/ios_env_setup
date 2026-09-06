@@ -2,11 +2,11 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  Ensure the USB iPhone's Wi-Fi IPv4 is on the same subnet as AltServer (this PC).
+  Ensure the USB iPhone's Wi-Fi IPv4 is on the same subnet as this PC.
 
 .DESCRIPTION
   Uses pymobiledevice3 (USB identify, then USB pcapd on en0) for the phone LAN IP.
-  Compares it to this PC's LAN IPv4(s) - AltServer binds those interfaces.
+  Compares it to this PC's LAN IPv4(s). Does not start AltServer.
 
   If subnets differ, picks telnet_reboot_wlan_*.py only from
   wifi_dx_common_*.py ROUTER_IP (phone host /24, then this PC's gateway).
@@ -19,7 +19,7 @@
   Direct run waits for Enter. Pass -NoWaitEnter when invoked as a child.
 
 .EXAMPLE
-  pwsh -File .\Invoke-AltServerPhoneSubnetIfNeeded.ps1
+  pwsh -File .\Invoke-PhonePcSubnetIfNeeded.ps1
 #>
 [CmdletBinding()]
 param(
@@ -52,7 +52,7 @@ function Wait-EnterToClose {
     }
 }
 
-function Test-AltServerSubnetInProcessCaller {
+function Test-PhonePcSubnetInProcessCaller {
     foreach ($frame in @(Get-PSCallStack)) {
         if ($frame.ScriptName -and ($frame.ScriptName -ne $PSCommandPath)) {
             return $true
@@ -66,16 +66,16 @@ function Exit-WithEnter {
     Wait-EnterToClose
     # In-process (& / dot-source from recover): throw so the caller is not killed.
     # pwsh -File -NoWaitEnter (deploy prep): exit so LASTEXITCODE is the real code.
-    if ($NoWaitEnter -and (Test-AltServerSubnetInProcessCaller)) {
-        throw "ALTSERVER_SUBNET_EXIT:$ExitCode"
+    if ($NoWaitEnter -and (Test-PhonePcSubnetInProcessCaller)) {
+        throw "PHONE_PC_SUBNET_EXIT:$ExitCode"
     }
     exit $ExitCode
 }
 
 trap {
-    if ("$($_.Exception.Message)" -match '^ALTSERVER_SUBNET_EXIT:') { throw $_ }
+    if ("$($_.Exception.Message)" -match '^PHONE_PC_SUBNET_EXIT:') { throw $_ }
     Write-Host ""
-    Write-Host ('[altserver-subnet] {0}' -f $_.Exception.Message) -ForegroundColor Red
+    Write-Host ('[phone-pc-subnet] {0}' -f $_.Exception.Message) -ForegroundColor Red
     if ($NoWaitEnter) { throw $_ }
     Wait-EnterToClose
     exit 1
@@ -339,9 +339,9 @@ function Test-WifiRestartTargetReachable {
     )
     $ok = Test-RouterTcp23 -Ip $Target.RouterIp -TimeoutMs $TimeoutMs
     if ($ok) {
-        Write-Host ('[altserver-subnet] tcp/23 {0} ({1}) open.' -f $Target.RouterIp, $Target.Model)
+        Write-Host ('[phone-pc-subnet] tcp/23 {0} ({1}) open.' -f $Target.RouterIp, $Target.Model)
     } else {
-        Write-Host ('[altserver-subnet] tcp/23 {0} ({1}) no reply in {2}ms; skip telnet (would wait ~60s).' -f `
+        Write-Host ('[phone-pc-subnet] tcp/23 {0} ({1}) no reply in {2}ms; skip telnet (would wait ~60s).' -f `
             $Target.RouterIp, $Target.Model, $TimeoutMs) -ForegroundColor Yellow
     }
     return $ok
@@ -371,7 +371,7 @@ function Invoke-RouterWifiRestart {
         [Parameter(Mandatory = $true)] $Target,
         [Parameter(Mandatory = $true)][string] $PyExe
     )
-    Write-Host ('[altserver-subnet] Running: {0}' -f $Target.Script)
+    Write-Host ('[phone-pc-subnet] Running: {0}' -f $Target.Script)
     $prev = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
@@ -439,22 +439,22 @@ try {
     if ($pcLans.Count -eq 0) {
         # Soft: recover treats exit 4 like no phone IP and falls back to :8765 wait / off-subnet reboot.
         # Do not throw — the outer catch would map that to hard exit 1 and abort companion mount recover.
-        Write-Warning '[altserver-subnet] No PC LAN IPv4 found (AltServer has nothing to share a subnet with; Clash TUN / AP drop?). Falling back.'
+        Write-Warning '[phone-pc-subnet] No PC LAN IPv4 found (nothing for the phone to share a subnet with; Clash TUN / AP drop?). Falling back.'
         Exit-WithEnter 4
     }
-    Write-Host '[altserver-subnet] PC / AltServer LAN:' -ForegroundColor Cyan
+    Write-Host '[phone-pc-subnet] PC LAN:' -ForegroundColor Cyan
     foreach ($lan in $pcLans) {
         Write-Host ('  {0}/{1} gw={2} ({3})' -f $lan.Ip, $lan.PrefixLength, $(if ($lan.Gateway) { $lan.Gateway } else { '(none)' }), $lan.Adapter)
     }
 
-    Write-Host '[altserver-subnet] Probing phone LAN IP (USB identify, then pcapd on en0)...'
+    Write-Host '[phone-pc-subnet] Probing phone LAN IP (USB identify, then pcapd on en0)...'
 
     function Show-PhoneProbe([object] $Probe) {
         if ($Probe.Ip) {
             $src = if ($Probe.Source) { $Probe.Source } else { 'unknown' }
-            Write-Host ('[altserver-subnet] Phone LAN IP: {0} (source={1})' -f $Probe.Ip, $src) -ForegroundColor Cyan
+            Write-Host ('[phone-pc-subnet] Phone LAN IP: {0} (source={1})' -f $Probe.Ip, $src) -ForegroundColor Cyan
         } else {
-            Write-Host ('[altserver-subnet] Phone LAN IP: (none) exit={0}' -f $Probe.ExitCode)
+            Write-Host ('[phone-pc-subnet] Phone LAN IP: (none) exit={0}' -f $Probe.ExitCode)
             if ($Probe.Error) {
                 Write-Host $Probe.Error -ForegroundColor DarkGray
             }
@@ -463,13 +463,13 @@ try {
 
     function Resolve-PhoneProbe([object] $Raw) {
         if ($Raw.Ip -and (Test-IsKnownRouterIp -Ip $Raw.Ip -RouterIps $knownRouterIps)) {
-            Write-Host ('[altserver-subnet] Ignoring pcapd IP {0} (wifi_dx_common ROUTER_IP, not the phone).' -f $Raw.Ip) -ForegroundColor DarkGray
+            Write-Host ('[phone-pc-subnet] Ignoring pcapd IP {0} (wifi_dx_common ROUTER_IP, not the phone).' -f $Raw.Ip) -ForegroundColor DarkGray
             $Raw.Ip = $null
         }
         if ($Raw.Ip) {
             foreach ($lan in $pcLans) {
                 if ($Raw.Ip -eq $lan.Ip) {
-                    Write-Host ('[altserver-subnet] Ignoring pcapd IP {0} (this PC LAN address, not the phone).' -f $Raw.Ip) -ForegroundColor DarkGray
+                    Write-Host ('[phone-pc-subnet] Ignoring pcapd IP {0} (this PC LAN address, not the phone).' -f $Raw.Ip) -ForegroundColor DarkGray
                     $Raw.Ip = $null
                     break
                 }
@@ -490,14 +490,14 @@ try {
     $probe = Resolve-PhoneProbe (Get-IphoneLanIpv4 -PyExe $py -ExcludeIps $excludePcIps)
     Show-PhoneProbe $probe
     if ($probe.ExitCode -eq 2) {
-        Write-Host '[altserver-subnet] No USB iPhone (plug in, Trust This Computer, unlock).' -ForegroundColor Yellow
+        Write-Host '[phone-pc-subnet] No USB iPhone (plug in, Trust This Computer, unlock).' -ForegroundColor Yellow
         Exit-WithEnter 2
     }
     if (-not $probe.Ip -and ($probe.ExitCode -eq 4 -or $probe.ExitCode -eq 0)) {
         if ($probe.WifiAssociated -eq $true) {
-            Write-Host '[altserver-subnet] Wi-Fi associated but no phone host IPv4 from pcapd. WifiRestart candidates come from wifi_dx_common (this PC gateway).' -ForegroundColor Yellow
+            Write-Host '[phone-pc-subnet] Wi-Fi associated but no phone host IPv4 from pcapd. WifiRestart candidates come from wifi_dx_common (this PC gateway).' -ForegroundColor Yellow
         } else {
-            Write-Host '[altserver-subnet] USB iPhone present but no Wi-Fi IPv4 from pcapd.' -ForegroundColor Yellow
+            Write-Host '[phone-pc-subnet] USB iPhone present but no Wi-Fi IPv4 from pcapd.' -ForegroundColor Yellow
             Exit-WithEnter 4
         }
     }
@@ -509,29 +509,29 @@ try {
             $lastKnownIp = [string]$probe.Ip
             $match = Test-PhoneOnPcSubnet -PhoneIp $probe.Ip -PcLans $pcLans -PrefixOverride $PrefixLength
             if ($match) {
-                Write-Host ('[altserver-subnet] OK - phone {0} shares subnet with PC/AltServer {1}/{2} ({3}).' -f `
+                Write-Host ('[phone-pc-subnet] OK - phone {0} shares subnet with PC {1}/{2} ({3}).' -f `
                     $probe.Ip, $match.Ip, $match.PrefixLength, $match.Adapter) -ForegroundColor Green
                 Exit-WithEnter 0
             }
-            Write-Host ('[altserver-subnet] Phone {0} is NOT on a PC/AltServer subnet.' -f $probe.Ip) -ForegroundColor Yellow
+            Write-Host ('[phone-pc-subnet] Phone {0} is NOT on a PC subnet.' -f $probe.Ip) -ForegroundColor Yellow
         } else {
-            Write-Host '[altserver-subnet] Phone has no Wi-Fi IPv4 yet (USB ok; pcapd empty).' -ForegroundColor Yellow
+            Write-Host '[phone-pc-subnet] Phone has no Wi-Fi IPv4 yet (USB ok; pcapd empty).' -ForegroundColor Yellow
             $lastKnownIp = Get-PhoneHostIp $probe $lastKnownIp
             if ($lastKnownIp) {
-                Write-Host ('[altserver-subnet] Matching last phone host {0} to wifi_dx_common ROUTER_IP.' -f $lastKnownIp)
+                Write-Host ('[phone-pc-subnet] Matching last phone host {0} to wifi_dx_common ROUTER_IP.' -f $lastKnownIp)
             } else {
-                Write-Host '[altserver-subnet] No phone host IP; matching this PC gateway to wifi_dx_common ROUTER_IP.'
+                Write-Host '[phone-pc-subnet] No phone host IP; matching this PC gateway to wifi_dx_common ROUTER_IP.'
             }
         }
 
         if ($SkipReboot) {
-            Write-Host '[altserver-subnet] Skipping gateway reboot (-SkipReboot).'
+            Write-Host '[phone-pc-subnet] Skipping gateway reboot (-SkipReboot).'
             Exit-WithEnter 1
         }
 
         $round++
         if ($round -gt $MaxRounds) {
-            Write-Host ('[altserver-subnet] Gave up after {0} reboot rounds.' -f $MaxRounds) -ForegroundColor Red
+            Write-Host ('[phone-pc-subnet] Gave up after {0} reboot rounds.' -f $MaxRounds) -ForegroundColor Red
             Exit-WithEnter 1
         }
 
@@ -569,7 +569,7 @@ try {
         }
         if ($reachable.Count -eq 0) {
             Write-Warning @"
-[altserver-subnet] No tcp/23 answer from phone AP or this PC's gateway under $RebootScriptsRoot
+[phone-pc-subnet] No tcp/23 answer from phone AP or this PC's gateway under $RebootScriptsRoot
 (need wifi_dx_common_*.py ROUTER_IP -> telnet_reboot_wlan_*.py).
 Phone IP: $(if ($phoneHostIp) { $phoneHostIp } else { '(unknown)' })
 "@
@@ -580,13 +580,13 @@ Phone IP: $(if ($phoneHostIp) { $phoneHostIp } else { '(unknown)' })
         $idx = 0
         $target = $reachable[$idx]
         $why = if ($target.Role -eq 'pc-gateway') { 'PC gateway' } else { 'phone AP' }
-        Write-Host ('[altserver-subnet] Round {0}: WifiRestart {1} ({2}) via {3} so phone and PC/AltServer share a subnet...' -f `
+        Write-Host ('[phone-pc-subnet] Round {0}: WifiRestart {1} ({2}) via {3} so phone and PC share a subnet...' -f `
             $round, $target.RouterIp, $target.Model, $why) -ForegroundColor Cyan
         $rebootCode = [int](Invoke-RouterWifiRestart -Target $target -PyExe $py)
         while ($rebootCode -ne 0 -and ($idx + 1) -lt $reachable.Count) {
             $idx++
             $next = $reachable[$idx]
-            Write-Host ('[altserver-subnet] WifiRestart {0} ({1}) failed (exit {2}); trying {3} ({4}) the same way.' -f `
+            Write-Host ('[phone-pc-subnet] WifiRestart {0} ({1}) failed (exit {2}); trying {3} ({4}) the same way.' -f `
                 $target.RouterIp, $target.Model, $rebootCode, $next.RouterIp, $next.Model) -ForegroundColor Yellow
             $target = $next
             $rebootCode = [int](Invoke-RouterWifiRestart -Target $target -PyExe $py)
@@ -598,14 +598,14 @@ Phone IP: $(if ($phoneHostIp) { $phoneHostIp } else { '(unknown)' })
         $pcLans = @(Get-PcLanIdentities)
         $previousIp = if ($probe.Ip) { $probe.Ip } elseif ($lastKnownIp) { $lastKnownIp } else { '' }
         $pcHint = @($pcLans | ForEach-Object { '{0}/{1}' -f $_.Ip, $_.PrefixLength }) -join ', '
-        Write-Host ('[altserver-subnet] Waiting up to {0}s after WifiRestart for the phone to leave {1} and join a PC/AltServer subnet ({2}); each poll is USB pcapd (~8s). Same off-subnet stops this wait early, then the next round can bounce that AP again.' -f `
+        Write-Host ('[phone-pc-subnet] Waiting up to {0}s after WifiRestart for the phone to leave {1} and join a PC subnet ({2}); each poll is USB pcapd (~8s). Same off-subnet stops this wait early, then the next round can bounce that AP again.' -f `
             $WaitPhoneIpSec, $(if ($previousIp) { $previousIp } else { '(no ip)' }), $pcHint)
         $deadline = [datetime]::UtcNow.AddSeconds($WaitPhoneIpSec)
         $gotFresh = $false
         $rejoinedSameAp = $false
         while ([datetime]::UtcNow -lt $deadline) {
             $left = [int][Math]::Max(0, [Math]::Ceiling(($deadline - [datetime]::UtcNow).TotalSeconds))
-            Write-Host ('[altserver-subnet] Re-probe ({0}s left; last {1}; want PC subnet)...' -f $left, $(if ($previousIp) { $previousIp } else { '(none)' }))
+            Write-Host ('[phone-pc-subnet] Re-probe ({0}s left; last {1}; want PC subnet)...' -f $left, $(if ($previousIp) { $previousIp } else { '(none)' }))
             Start-Sleep -Seconds $PollSec
             $pcLans = @(Get-PcLanIdentities)
             $probe = Resolve-PhoneProbe (Get-IphoneLanIpv4 -PyExe $py -ExcludeIps $excludePcIps)
@@ -620,14 +620,14 @@ Phone IP: $(if ($phoneHostIp) { $phoneHostIp } else { '(unknown)' })
             if ($previousIp) {
                 $stillOnOldAp = Test-SameIpv4Subnet -IpA $probe.Ip -IpB $previousIp -PrefixLen $prefixForMatch
             }
-            Write-Host ('[altserver-subnet] Probe IP={0} changed={1} onPcSubnet={2} sameOffSubnet={3}' -f `
+            Write-Host ('[phone-pc-subnet] Probe IP={0} changed={1} onPcSubnet={2} sameOffSubnet={3}' -f `
                 $probe.Ip, $changed, [bool]$match, $stillOnOldAp)
             if ($match) {
-                Write-Host ('[altserver-subnet] OK - phone {0} now shares subnet with PC/AltServer {1}.' -f $probe.Ip, $match.Ip) -ForegroundColor Green
+                Write-Host ('[phone-pc-subnet] OK - phone {0} now shares subnet with PC {1}.' -f $probe.Ip, $match.Ip) -ForegroundColor Green
                 Exit-WithEnter 0
             }
             if ($stillOnOldAp) {
-                Write-Host '[altserver-subnet] Phone is back on the same off-subnet AP (WifiRestart does not change iOS SSID).' -ForegroundColor Yellow
+                Write-Host '[phone-pc-subnet] Phone is back on the same off-subnet AP (WifiRestart does not change iOS SSID).' -ForegroundColor Yellow
                 $rejoinedSameAp = $true
                 $lastKnownIp = [string]$probe.Ip
                 break
@@ -638,21 +638,21 @@ Phone IP: $(if ($phoneHostIp) { $phoneHostIp } else { '(unknown)' })
         }
         if ($rejoinedSameAp) {
             Write-Host @"
-[altserver-subnet] Phone stayed on $($probe.Ip) after WifiRestart of $($target.RouterIp) ($($target.Model)).
+[phone-pc-subnet] Phone stayed on $($probe.Ip) after WifiRestart of $($target.RouterIp) ($($target.Model)).
 iOS rejoined that SSID (DHCP may change, e.g. .95 -> .29). Stopping this wait and retrying that AP.
 "@ -ForegroundColor Yellow
         }
         if (-not $gotFresh) {
-            Write-Warning '[altserver-subnet] Timed out waiting for a new phone IP - re-checking.'
+            Write-Warning '[phone-pc-subnet] Timed out waiting for a new phone IP - re-checking.'
         }
         $probe = Resolve-PhoneProbe (Get-IphoneLanIpv4 -PyExe $py -ExcludeIps $excludePcIps)
         Show-PhoneProbe $probe
         $lastKnownIp = Get-PhoneHostIp $probe $lastKnownIp
     }
 } catch {
-    if ("$($_.Exception.Message)" -match '^ALTSERVER_SUBNET_EXIT:') { throw }
+    if ("$($_.Exception.Message)" -match '^PHONE_PC_SUBNET_EXIT:') { throw }
     Write-Host ""
-    Write-Host ('[altserver-subnet] {0}' -f $_.Exception.Message) -ForegroundColor Red
+    Write-Host ('[phone-pc-subnet] {0}' -f $_.Exception.Message) -ForegroundColor Red
     if ($_.ScriptStackTrace) {
         Write-Host $_.ScriptStackTrace -ForegroundColor DarkGray
     }

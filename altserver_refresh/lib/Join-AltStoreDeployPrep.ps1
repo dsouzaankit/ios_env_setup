@@ -35,6 +35,8 @@ $script:IosAltRefreshDir = if ($PSScriptRoot) {
 } else {
     Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 }
+# env_setup root (parent of altserver_refresh) — phone LAN scripts live in lan\
+$script:IosEnvSetupRoot = Split-Path -Parent $script:IosAltRefreshDir
 
 function Get-IosAltStorePrepPwsh {
     $cmd = Get-Command -Name pwsh.exe -ErrorAction SilentlyContinue
@@ -68,7 +70,7 @@ function Invoke-IosAltStorePrepChild {
         if ($null -ne $LASTEXITCODE) { $code = [int]$LASTEXITCODE }
     } catch {
         $msg = [string]$_.Exception.Message
-        if ($msg -match 'ALTSERVER_SUBNET_EXIT:(\d+)') {
+        if ($msg -match 'PHONE_PC_SUBNET_EXIT:(\d+)') {
             return [int]$Matches[1]
         }
         if ($msg -match 'ALTSERVER_EXIT:(\d+)') {
@@ -150,7 +152,7 @@ function Invoke-AltStoreDeployPrep {
     Write-Host '==> AltStore deploy prep (AltServer tray; subnet is USB plug-in)'
     $dir = $script:IosAltRefreshDir
     $ifNeeded = Join-Path $dir 'sideload\Invoke-AltServerIfNeeded.ps1'
-    $subnet = Join-Path $dir 'lan\Invoke-AltServerPhoneSubnetIfNeeded.ps1'
+    $subnet = Join-Path $script:IosEnvSetupRoot 'lan\Invoke-PhonePcSubnetIfNeeded.ps1'
     if (-not (Test-Path -LiteralPath $ifNeeded)) {
         Write-Warning "[altserver] Missing $ifNeeded (Join loaded from '$dir')"
         return
@@ -167,10 +169,10 @@ function Invoke-AltStoreDeployPrep {
         if (-not (Test-Path -LiteralPath $subnet)) {
             Write-Warning "[altserver] Missing $subnet"
         } else {
-            Write-Host '[altserver] Phone LAN vs PC/AltServer subnet (USB pcapd)...'
+            Write-Host '[altserver] Phone LAN vs PC subnet (USB pcapd)...'
             $code = Get-IosAltStorePrepExitCode (Invoke-IosAltStorePrepChild -PwshExe $pwsh -ScriptPath $subnet)
             if ($code -eq 0) {
-                Write-Host '[altserver] Phone and PC/AltServer share a subnet (Wi-Fi sideload/refresh possible).'
+                Write-Host '[altserver] Phone and PC share a subnet (Wi-Fi sideload/refresh possible).'
             } elseif ($code -eq 2 -or $code -eq 4) {
                 Write-Host ("[altserver] Phone subnet not confirmed (exit {0}). iCloud AltStore install still works. USB sideload needs the phone on this PC's Wi-Fi." -f $code) -ForegroundColor DarkYellow
             } else {

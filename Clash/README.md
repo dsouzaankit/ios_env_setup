@@ -6,7 +6,7 @@ Dreamacro **Clash Premium** is discontinued. Current core: [mihomo](https://gith
 
 ## Why Bonjour dies with TUN
 
-mihomo Fake-IP/TUN installs an **on-link** `224.0.0.0/4` on the **Mihomo** NIC (`198.18.0.1`) with a better metric than Wi-Fi. mDNS (`224.0.0.251:5353`) goes into the tunnel, so `.local` names and other Bonjour stay empty even when the phone is on `10.0.100.x`. Phone-IP probe (`altserver_refresh\lan\Get-IphoneLanIpv4.py`) uses USB `pcapd` and does not depend on this. Closing Clash or deleting that route puts multicast back on Wi-Fi.
+mihomo Fake-IP/TUN installs an **on-link** `224.0.0.0/4` on the **Mihomo** NIC (`198.18.0.1`) with a better metric than Wi-Fi. mDNS (`224.0.0.251:5353`) goes into the tunnel, so `.local` names and other Bonjour stay empty even when the phone is on `10.0.100.x`. Phone-IP probe (`lan\Get-IphoneLanIpv4.py`) uses USB `pcapd` and does not depend on this. Closing Clash or deleting that route puts multicast back on Wi-Fi.
 
 `IP-CIDR,224.0.0.0/4,DIRECT` in the profile is **not** enough. `tun.route-exclude-address` is a **mihomo** key (Premium ignores it) and on Windows it often does not remove the OS multicast route — **gvisor or system**, same issue. Keep **gvisor** if you want; run `..\altserver_refresh\VpnMulticast\Remove-VpnMulticastRoute.ps1` (elevated) after TUN is up. That delete is independent of stack.
 

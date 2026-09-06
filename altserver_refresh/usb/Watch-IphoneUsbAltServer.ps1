@@ -6,7 +6,7 @@
 .DESCRIPTION
   Polls PnP for Apple USB. On a rising edge (unplugged -> plugged), waits for
   usbmux to settle, then runs Invoke-AltServerIfNeeded.ps1, Mihomo/Surfshark
-  multicast drop, and Invoke-AltServerPhoneSubnetIfNeeded.ps1 (same pair as
+  multicast drop, and Invoke-PhonePcSubnetIfNeeded.ps1 (same pair as
   Join-AltStoreDeployPrep).
   Stays idle while the phone remains connected. Does not tap AltStore Refresh All.
 
@@ -119,7 +119,9 @@ function Invoke-UsbAltServerChild {
         if ($null -ne $LASTEXITCODE) { $code = [int]$LASTEXITCODE }
     } catch {
         $msg = [string]$_.Exception.Message
-        if ($msg -match 'ALTSERVER_SUBNET_EXIT:(\d+)') { return [int]$Matches[1] }
+        if ($msg -match 'PHONE_PC_SUBNET_EXIT:(\d+)') {
+            return [int]$Matches[1]
+        }
         if ($msg -match 'ALTSERVER_EXIT:(\d+)') { return [int]$Matches[1] }
         Write-UsbLog ("{0} threw: {1}" -f (Split-Path -Leaf $ScriptPath), $msg)
         return 1
@@ -137,7 +139,7 @@ function Invoke-UsbAltServerPrep {
         return 1
     }
     $ifNeeded = Join-Path $script:IosAltRefreshDir 'sideload\Invoke-AltServerIfNeeded.ps1'
-    $subnet = Join-Path $script:IosAltRefreshDir 'lan\Invoke-AltServerPhoneSubnetIfNeeded.ps1'
+    $subnet = Join-Path $script:IosEnvSetupRoot 'lan\Invoke-PhonePcSubnetIfNeeded.ps1'
     if (-not (Test-Path -LiteralPath $ifNeeded)) {
         Write-UsbLog ("missing {0}" -f $ifNeeded)
         return 1
@@ -148,7 +150,7 @@ function Invoke-UsbAltServerPrep {
             Write-UsbLog ("missing {0}" -f $subnet)
             return 1
         }
-        Write-UsbLog 'Phone LAN vs PC/AltServer subnet (USB pcapd)...'
+        Write-UsbLog 'Phone LAN vs PC subnet (USB pcapd)...'
         $subnetCode = Invoke-UsbAltServerChild -PwshExe $pwsh -ScriptPath $subnet
         Write-UsbLog ("Subnet helper exit {0}" -f $subnetCode)
     }
