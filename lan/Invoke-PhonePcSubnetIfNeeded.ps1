@@ -495,7 +495,12 @@ try {
     }
     if (-not $probe.Ip -and ($probe.ExitCode -eq 4 -or $probe.ExitCode -eq 0)) {
         if ($probe.WifiAssociated -eq $true) {
-            Write-Host '[phone-pc-subnet] Wi-Fi associated but no phone host IPv4 from pcapd. WifiRestart candidates come from wifi_dx_common (this PC gateway).' -ForegroundColor Yellow
+            # Phone radio is up but idle — pcapd often sees almost no host IPv4 in 8s.
+            # WifiRestart of this PC's gateway does not invent a phone IP (and can strand
+            # an already-correct SSID). Soft-fail so Loop Segments recover can wait on :8765.
+            Write-Host '[phone-pc-subnet] Wi-Fi associated but no phone host IPv4 from pcapd (phone idle / quiet LAN).' -ForegroundColor Yellow
+            Write-Host '[phone-pc-subnet] Skipping WifiRestart of PC gateway — soft exit 4 (recover may wait for :8765).' -ForegroundColor Yellow
+            Exit-WithEnter 4
         } else {
             Write-Host '[phone-pc-subnet] USB iPhone present but no Wi-Fi IPv4 from pcapd.' -ForegroundColor Yellow
             Exit-WithEnter 4
