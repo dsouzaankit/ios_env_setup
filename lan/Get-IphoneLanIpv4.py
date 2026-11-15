@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """Print the USB-connected iPhone's current LAN IPv4.
 
-Uses pymobiledevice3 over USB to identify the phone, then USB
+Uses pymobiledevice3 over USB to identify the phone, then asks its DVT network
+monitor for the local address of its TCP connections on en0 (exact: the phone's
+own address, ``source: usb-dvt-netmon``). UDP sockets are ignored, since they can
+stay bound to a previous Wi-Fi's address. No TCP over Wi-Fi (idle, or a Wi-Fi
+with no gateway where internet goes over cellular): falls back to USB
 ``com.apple.pcapd`` on en0 (up to two captures; second window is longer if the
 first saw no packets). Idle associated radios often emit nothing in the first
 8s. Gateway-shaped addresses (``.1`` / ``.2`` / ``.254``) are not the phone
@@ -585,8 +589,66 @@ def _load_exclude_ips(cli: list[str] | None = None) -> set[str]:
     return out
 
 
+async def _netmon_wifi_ipv4(seconds: float = 6.0) -> str | None:
+    """The phone's address on its TCP connections over en0 (DVT network monitor), or None.
+
+    Tries the iOS 17+ userspace RSD tunnel (no admin) first, then plain lockdown."""
+    from pymobiledevice3.services.dvt.instruments.dvt_provider import DvtProvider
+    from pymobiledevice3.services.dvt.instruments.network_monitor import (
+        ConnectionDetectionEvent,
+        InterfaceDetectionEvent,
+        NetworkMonitor,
+    )
+
+    async def _read(dvt: Any) -> str | None:
+        names: dict[int, str] = {}
+        seen: list[tuple[int, str]] = []
+
+        async def _collect() -> None:
+            async with NetworkMonitor(dvt) as monitor:
+                async for event in monitor:
+                    if isinstance(event, InterfaceDetectionEvent):
+                        names[event.interface_index] = event.name
+                    elif isinstance(event, ConnectionDetectionEvent) and event.kind == 1:  # TCP
+                        addr = getattr(event.local_address.data, "address", None)
+                        if isinstance(addr, ipaddress.IPv4Address) and _is_lan_unicast(str(addr)) \
+                                and str(addr) not in _EXCLUDE_IPS:
+                            seen.append((event.interface_index, str(addr)))
+
+        try:
+            await asyncio.wait_for(_collect(), timeout=seconds)
+        except asyncio.TimeoutError:
+            pass
+        wifi = [ip for idx, ip in seen if names.get(idx) == "en0"]
+        return Counter(wifi).most_common(1)[0][0] if wifi else None
+
+    try:
+        from pymobiledevice3.remote.userspace_tunnel import UserspaceRsdTunnel
+
+        async with UserspaceRsdTunnel() as rsd:
+            async with DvtProvider(rsd) as dvt:
+                return await _read(dvt)
+    except Exception as exc:  # noqa: BLE001
+        _log(f"Network monitor (userspace tunnel) unavailable: {type(exc).__name__}: {exc}")
+    try:
+        from pymobiledevice3.lockdown import create_using_usbmux
+
+        lockdown = await create_using_usbmux()
+        try:
+            async with DvtProvider(lockdown) as dvt:
+                return await _read(dvt)
+        finally:
+            try:
+                await lockdown.close()
+            except Exception:  # noqa: BLE001
+                pass
+    except Exception as exc:  # noqa: BLE001
+        _log(f"Network monitor (lockdown) unavailable: {type(exc).__name__}: {exc}")
+    return None
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(description="USB iPhone Wi-Fi IPv4 via pcapd")
+    parser = argparse.ArgumentParser(description="USB iPhone Wi-Fi IPv4 via the network monitor, else pcapd")
     parser.add_argument(
         "--exclude-ip",
         action="append",
@@ -612,6 +674,25 @@ def main() -> int:
 
     phone = phones[0]
     _log(f"USB iPhone: {phone.get('name') or phone.get('udid') or '?'}")
+    _log("USB network monitor: the phone's address on its TCP connections over en0 (~6s)...")
+    try:
+        nm_ip = asyncio.run(_netmon_wifi_ipv4())
+    except Exception as exc:  # noqa: BLE001
+        _log(f"Network monitor failed: {type(exc).__name__}: {exc}")
+        nm_ip = None
+    if nm_ip:
+        print(json.dumps({
+            "ok": True,
+            "ip": nm_ip,
+            "deviceName": phone["name"],
+            "udid": phone["udid"],
+            "source": "usb-dvt-netmon",
+            "wifiLockdownJustSet": False,
+            "wifiPowerJustSet": False,
+            "wifiAssociated": True,
+        }, ensure_ascii=True))
+        return 0
+    _log("No TCP over Wi-Fi (idle, or a Wi-Fi with no gateway) - falling back to pcapd.")
     _log("USB pcapd on en0 (up to two ~8s captures)...")
     usb_ip, assoc, usb_note = _usb_wifi_ipv4(phone.get("udid") or "")
     payload = {
