@@ -1,10 +1,10 @@
-# Phone LAN (USB network monitor, pcapd fallback)
+# Phone LAN (USB network monitor, ARP by Wi-Fi address, pcapd fallback)
 
 USB-connected iPhone Wi‑Fi IPv4 and phone↔PC subnet alignment. Does **not** start AltServer.
 
 | Script | Role |
 |--------|------|
-| `Get-IphoneLanIpv4.py` | pymobiledevice3 over USB → phone Wi‑Fi IPv4 JSON: first the phone's own address on its **TCP** connections over `en0` (DVT network monitor, exact, `source: usb-dvt-netmon`; UDP sockets are skipped because they can keep a previous Wi‑Fi's address); no Wi‑Fi TCP (idle, or a Wi‑Fi with no gateway where internet goes over cellular) → pcapd sniffing (`source: usb-pcapd`) |
+| `Get-IphoneLanIpv4.py` | pymobiledevice3 over USB → phone Wi‑Fi IPv4 JSON: first the phone's own address on its **TCP** connections over `en0` (DVT network monitor, exact, `source: usb-dvt-netmon`; UDP sockets are skipped because they can keep a previous Wi‑Fi's address); no Wi‑Fi TCP (idle, or a Wi‑Fi with no gateway where internet goes over cellular) → its Wi‑Fi hardware address (diagnostics; iOS uses a private address per network) looked up in this PC's ARP table after one UDP packet to every host of its /24s (`source: usb-mac-arp`, exact when it shares a network with this PC) → pcapd sniffing (`source: usb-pcapd`) |
 | `Invoke-PhonePcSubnetIfNeeded.ps1` | Compare phone IP to this PC’s LAN; WifiRestart if **off-subnet**. If Wi‑Fi is associated but pcapd sees no host IPv4 (idle phone), **soft exit 4** — does **not** WifiRestart the PC gateway |
 
 ```powershell

@@ -5,7 +5,10 @@ Uses pymobiledevice3 over USB to identify the phone, then asks its DVT network
 monitor for the local address of its TCP connections on en0 (exact: the phone's
 own address, ``source: usb-dvt-netmon``). UDP sockets are ignored, since they can
 stay bound to a previous Wi-Fi's address. No TCP over Wi-Fi (idle, or a Wi-Fi
-with no gateway where internet goes over cellular): falls back to USB
+with no gateway where internet goes over cellular): looks the phone's Wi-Fi
+hardware address (diagnostics IORegistry; iOS uses a private address per network) up among this PC's
+neighbours after one UDP packet to every host of its /24s (``source: usb-mac-arp``, exact when the
+phone shares a network with this PC). Not found: falls back to USB
 ``com.apple.pcapd`` on en0 (up to two captures; second window is longer if the
 first saw no packets). Idle associated radios often emit nothing in the first
 8s. Gateway-shaped addresses (``.1`` / ``.2`` / ``.254``) are not the phone
@@ -647,6 +650,75 @@ async def _netmon_wifi_ipv4(seconds: float = 6.0) -> str | None:
     return None
 
 
+async def _phone_wifi_mac() -> str | None:
+    """The phone's current Wi-Fi hardware address (aa-bb-cc-dd-ee-ff), from the diagnostics IORegistry.
+    iOS uses a private address per network, so this is the one for the network it is on now."""
+    from pymobiledevice3.lockdown import create_using_usbmux
+    from pymobiledevice3.services.diagnostics import DiagnosticsService
+
+    lockdown = await create_using_usbmux()
+    try:
+        async with DiagnosticsService(lockdown=lockdown) as diag:
+            raw = await diag.get_wifi()
+    finally:
+        try:
+            await lockdown.close()
+        except Exception:  # noqa: BLE001
+            pass
+    if not isinstance(raw, dict):
+        return None
+    ch = raw.get("IO80211Channel")
+    if not ((isinstance(ch, int) and ch > 0) or raw.get("IO80211Band")):
+        return None  # not joined to any Wi-Fi
+    mac = _mac_bytes(raw.get("IOMACAddress"))
+    return "-".join(f"{b:02x}" for b in mac) if mac else None
+
+
+def _pc_ipv4s() -> list[str]:
+    """This PC's LAN IPv4s: the --exclude-ip / LOOP_SEGMENTS_EXCLUDE_LAN_IPS list the callers pass,
+    else the host's own addresses."""
+    ips = [ip for ip in _EXCLUDE_IPS if _is_lan_unicast(ip)]
+    if ips:
+        return ips
+    import socket
+    try:
+        return sorted({a[4][0] for a in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)
+                       if _is_lan_unicast(a[4][0])})
+    except OSError:
+        return []
+
+
+def _mac_arp_ipv4(mac: str, pc_ips: list[str]) -> str | None:
+    """Find `mac` among this PC's neighbours on its own /24s: one UDP packet to every host makes Windows
+    resolve it (ARP), then `arp -a`. Two rounds: a sleeping phone can answer the first one late.
+    Exact, and needs no traffic from the phone; None when the phone is on none of these networks."""
+    import socket
+    import time
+
+    nets = sorted({".".join(ip.split(".")[:3]) for ip in pc_ips})
+    for settle in (1.5, 3.0):
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            for net in nets:
+                for h in range(1, 255):
+                    ip = f"{net}.{h}"
+                    if ip in pc_ips:
+                        continue
+                    try:
+                        sock.sendto(b"\0", (ip, 9))  # discard port; only the ARP lookup matters
+                    except OSError:
+                        pass
+        time.sleep(settle)
+        try:
+            out = subprocess.run(["arp", "-a"], capture_output=True, text=True, timeout=10).stdout
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        for line in out.splitlines():
+            parts = line.split()
+            if len(parts) >= 2 and parts[1].lower() == mac and ".".join(parts[0].split(".")[:3]) in nets:
+                return parts[0]
+    return None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="USB iPhone Wi-Fi IPv4 via the network monitor, else pcapd")
     parser.add_argument(
@@ -692,7 +764,29 @@ def main() -> int:
             "wifiAssociated": True,
         }, ensure_ascii=True))
         return 0
-    _log("No TCP over Wi-Fi (idle, or a Wi-Fi with no gateway) - falling back to pcapd.")
+    # No Wi-Fi traffic (idle, or a Wi-Fi with no gateway): the phone's Wi-Fi hardware address over USB,
+    # looked up among this PC's neighbours. Exact when the phone shares a network with this PC.
+    try:
+        mac = asyncio.run(_phone_wifi_mac())
+    except Exception as exc:  # noqa: BLE001
+        _log(f"Wi-Fi address read failed: {type(exc).__name__}: {exc}")
+        mac = None
+    if mac:
+        _log(f"No TCP over Wi-Fi - looking up the phone's Wi-Fi address {mac} on this PC's network(s)...")
+        arp_ip = _mac_arp_ipv4(mac, _pc_ipv4s())
+        if arp_ip:
+            print(json.dumps({
+                "ok": True,
+                "ip": arp_ip,
+                "deviceName": phone["name"],
+                "udid": phone["udid"],
+                "source": "usb-mac-arp",
+                "wifiLockdownJustSet": False,
+                "wifiPowerJustSet": False,
+                "wifiAssociated": True,
+            }, ensure_ascii=True))
+            return 0
+    _log("Not found by address either (phone on another network, or on no Wi-Fi) - falling back to pcapd.")
     _log("USB pcapd on en0 (up to two ~8s captures)...")
     usb_ip, assoc, usb_note = _usb_wifi_ipv4(phone.get("udid") or "")
     payload = {
