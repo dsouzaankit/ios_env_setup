@@ -27,6 +27,32 @@ pwsh -File ..\altserver_refresh\VpnMulticast\Remove-VpnMulticastRoute.ps1
 
 Run **elevated** after enabling TUN, or register `IosEnv-Vpn-RemoveMulticast` via `altserver_refresh\usb\Register-IphoneUsbAltServer.ps1` (USB plug-in starts that task with highest privileges, no UAC per cable). Loop Segments companion can UAC-launch **only that script** and stay unelevated. Clash or Surfshark may re-add the route the next time TUN/VPN comes up.
 
+## LAN and router DNS exceptions
+
+Clash Verge Rev's own `config.yaml` (in `%APPDATA%\io.github.clash-verge-rev.clash-verge-rev\`) holds the TUN settings and **overrides the profile's `tun:` section**. With `route-exclude-address: []` there, the profile's LAN excludes never reach the running core (`clash-verge.yaml`). The tunnel then takes `192.168.2.x` / `10.0.100.x` traffic and even DNS sent straight to the router (`dns-hijack: any:53`), and router names like `iphone.routerlogin.net` get fake `198.18.x.x` answers.
+
+```powershell
+pwsh -File .\Set-ClashLanExceptions.ps1
+```
+
+It quits the Clash Verge GUI, edits two files (backing each up as `*.bak-<timestamp>`), restarts the GUI, and checks the running config:
+
+| File | Change |
+|------|--------|
+| Verge `config.yaml` | `tun.route-exclude-address`: `224.0.0.0/4`, `ff02::/16`, `10.0.100.0/24`, `192.168.2.0/24` |
+| Active profile's Merge enhancement (`profiles\<merge uid>.yaml`) | `dns.fake-ip-filter` += `+.routerlogin.net`; `dns.nameserver-policy`: `+.routerlogin.net` → `dhcp://Wi-Fi` (the router's DNS from DHCP, even when Windows has a manual `8.8.8.8`) |
+
+The excludes cover whole subnets, so a different phone IP in the same `10.0.100.x` / `192.168.2.x` needs no rerun. If the app setup puts the phone LAN on another subnet, pass it: `-ExcludeAddress 224.0.0.0/4,ff02::/16,<subnet>/24,...`. The core (`verge-mihomo`) runs elevated under `clash_verge_service`; the script leaves it running, and the GUI sends it the new config on start. Options: `-ExcludeAddress`, `-RouterDomain`, `-DhcpInterface`, `-NoRestart` (Verge already closed), `-WhatIf`. Changing the TUN settings in Verge's GUI later rewrites `config.yaml`; rerun the script after that.
+
+Check (TUN on):
+
+```powershell
+Find-NetRoute -RemoteIPAddress 10.0.100.2 | Select-Object -Last 1 InterfaceAlias   # Wi-Fi, not Mihomo
+Resolve-DnsName ANKIT-S5406S.routerlogin.net                                     # real 10.0.100.x / 192.168.2.x
+```
+
+The OS multicast route (Bonjour) is separate; see below.
+
 ## Profiles
 
 Import in Verge: **Profiles → New → Local** → pick a file under `profiles\`.
