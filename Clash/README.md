@@ -8,7 +8,9 @@ Dreamacro **Clash Premium** is discontinued. Current core: [mihomo](https://gith
 
 mihomo Fake-IP/TUN installs an **on-link** `224.0.0.0/4` on the **Mihomo** NIC (`198.18.0.1`) with a better metric than Wi-Fi. mDNS (`224.0.0.251:5353`) goes into the tunnel, so `.local` names and other Bonjour stay empty even when the phone is on `10.0.100.x`. Phone-IP probe (`lan\Get-IphoneLanIpv4.py`) uses USB `pcapd` and does not depend on this. Closing Clash or deleting that route puts multicast back on Wi-Fi.
 
-`IP-CIDR,224.0.0.0/4,DIRECT` in the profile is **not** enough. `tun.route-exclude-address` is a **mihomo** key (Premium ignores it) and on Windows it often does not remove the OS multicast route — **gvisor or system**, same issue. Keep **gvisor** if you want; run `..\altserver_refresh\VpnMulticast\Remove-VpnMulticastRoute.ps1` (elevated) after TUN is up. That delete is independent of stack.
+`IP-CIDR,224.0.0.0/4,DIRECT` in the profile is **not** enough. `tun.route-exclude-address` is a **mihomo** key (Premium ignores it). The earlier note that it "often does not remove the OS multicast route" was written while Clash Verge's own `config.yaml` replaced the profile's list with `[]`, so the exclusion never reached the core. With `224.0.0.0/4` applied there by [`Set-ClashLanExceptions.ps1`](#lan-and-router-dns-exceptions), TUN on (gvisor) showed no `224.0.0.0/4` on Mihomo, only on Wi-Fi and loopback (2026-11-22, one check). Still run `..\altserver_refresh\VpnMulticast\Remove-VpnMulticastRoute.ps1` (elevated) if the route shows up: the delete is independent of stack and also covers Surfshark.
+
+**Why the companion checks this at every start, while the LAN exceptions are one-off:** the multicast route is live routing-table state, not config. Clash adds it again whenever TUN comes up (TUN toggle, core or service restart, reboot), and Surfshark whenever it reconnects. The LAN exceptions live in Clash Verge's config files, which persist. The check is cheap: it asks for UAC only when Mihomo or Surfshark actually has the route (`No 224.0.0.0/4 on Mihomo or Surfshark - skip elevation` otherwise).
 
 Check:
 
