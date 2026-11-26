@@ -20,5 +20,8 @@ Clash/*.exe
 # USB watcher runtime log
 altserver_refresh/iphone-usb-altserver.log
 
+# iloader installer kept next to sidestore/README.md
+sidestore/*.msi
+
 # zsign binary for the PC-signed USB install (ios_3d_loop_segments windows\usb\Install-LoopSegmentsIpaViaUsb.ps1)
 zsign/
