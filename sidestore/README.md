@@ -58,7 +58,7 @@ Shared setup and troubleshooting for the sideloaded apps that use this repo ([io
 |---|---|
 | **Reset to Defaults** in Anisette Client Configuration | Puts `macOS;` back → 503 again. Never tap it. |
 | Retrying again and again | Each failure is another Apple request; it can add a rate limit on top. |
-| SideStore offers to **revoke** the certificate (after closing a failed login page) | Choose **Continue without revoking**. A certificate exported from SideStore for PC signing (Loop Segments: `windows\signing\signing.p12`) is that same certificate. |
+| SideStore offers to **revoke** the certificate (after closing a failed login page) | Choose **Continue without revoking**. A certificate exported from SideStore for PC signing ([`../zsign/signing.p12`](../zsign/README.md)) is that same certificate. |
 | `-45061` / `-22410` after the change | **Reset adi.pb** again (keep headers) → reopen → sign in. |
 | Refresh: **Could not locate signing certificate** | Long-press the app in **My Apps** → reset its certificate → **Refresh All**. |
 

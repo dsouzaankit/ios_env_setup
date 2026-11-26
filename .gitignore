@@ -23,5 +23,11 @@ altserver_refresh/iphone-usb-altserver.log
 # iloader installer kept next to sidestore/README.md
 sidestore/*.msi
 
-# zsign binary for the PC-signed USB install (ios_3d_loop_segments windows\usb\Install-LoopSegmentsIpaViaUsb.ps1)
-zsign/
+# zsign/: the shared signing kit is tracked; zsign.exe (downloaded), SideStore's signing.p12 (a signing
+# key) and zsign's cache stay on the machine
+zsign/*
+!zsign/README.md
+!zsign/SideStoreSigning.ps1
+!zsign/sidestore_sign.py
+*.p12
+.zsign_cache/
