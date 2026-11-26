@@ -1,5 +1,7 @@
 # AltServer helpers
 
+Scripts only. **Install / refresh guide** (iTunes + iCloud from Apple, Wi‑Fi sync Plans A–D, weekly refresh, error 1006, “incorrect format”, fix-in-order checklist): **[ALTSTORE.md](ALTSTORE.md)**.
+
 Role folders match Loop Segments `windows\`: shared helpers in **`lib\`**, USB watch in **`usb\`**, tray start in **`sideload\`**, multicast drop in **`VpnMulticast\`**. Phone LAN (USB pcapd / subnet) lives in sibling **`../lan/`**.
 
 | Folder | Role |

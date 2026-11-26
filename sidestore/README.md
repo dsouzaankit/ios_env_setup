@@ -24,7 +24,7 @@ Shared setup and troubleshooting for the sideloaded apps that use this repo ([io
 
 ## Troubleshooting
 
-**incorrect data format:** (1) partial iCloud IPA, (2) bad anisette. Fix IPA locality first; then SideStore Settings → change **Anisette** server / sign out+in / re-place pairing with iloader. If stable still fails, use **nightly**. On Apple ID login: **User Customizations** → turn off **On-Device Anisette** (or switch anisette server).
+**incorrect data format** (“The data couldn’t be read because it isn’t in the correct format”, on Install or Refresh): (1) partial iCloud IPA, (2) bad anisette (the store expected JSON from Apple and got an HTML error page; not usually a broken IPA). Fix IPA locality first: wait until Files shows the full size (no cloud badge / “waiting…”), then **retry Install several times** (confirmed to clear once sync finishes; a partial cloud copy looks like a corrupt IPA). Store codes **2013** / **3023** / anisette invalid → another anisette server / re-pair; **1007** / **2007** → re-download the IPA, wait for full sync, retry, or try **nightly**. Do not mix Sideloadly and SideStore for the same app. Then: then SideStore Settings → change **Anisette** server / sign out+in / re-place pairing with iloader. If stable still fails, use **nightly**. On Apple ID login: **User Customizations** → turn off **On-Device Anisette** (or switch anisette server).
 
 **Refresh fails: “Device Reachability (Ping): Unreachable”** (Settings → **Health Check**; LocalDevVPN shows Connected). LocalDevVPN **1.3.0** (Sep 2026) changed its tunnel addresses to `10.7.1.x`; SideStore builds older than about Sep 3, 2026 can't reach the device on them ([SideStore #1464](https://github.com/SideStore/SideStore/issues/1464)).
 
