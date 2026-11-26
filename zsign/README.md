@@ -51,3 +51,7 @@ $j = Start-Job { Test-Path -LiteralPath $args[0] } -ArgumentList 'P:\all_scripts
 ```
 
 If it keeps hanging, copy zsign to a local folder and point the app's config at it (Loop Segments: `zsignExe` in `windows\loop-segments-windows.json`).
+
+## USB install times out
+
+If signing finishes (the `Signing on this PC…` line appears) but the install then times out or ends in `INSTALL_FAILED`, the phone's install service is usually stuck. Restart the iPhone, unlock it, keep it on USB, and run the install again.
