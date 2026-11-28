@@ -26,12 +26,94 @@ import asyncio
 import ctypes
 import datetime as dt
 import os
+import re
 import subprocess
 import sys
+import time
+import uuid
 from ctypes import wintypes
 
 
 INSTALL_TIMEOUT_S = 120
+# Install trace: each step of the USB install with its time, plus the phone's own log lines from the
+# services that install, start and stop apps while it runs. A timeout names the last step reached.
+TRACE_PATH = os.path.join(os.environ.get("TEMP") or os.path.expanduser("~"), "sidestore-sign-install-trace.log")
+TRACE_MAX_BYTES = 8 * 1024 * 1024  # then it is moved to .1 and started fresh
+# Lines are "<date> <phone> <process>(<subsystem>)[<pid>] <Level>: <text>": match the process, or the app's
+# bundle id anywhere (other processes mention SpringBoard on every screen change, so not the bare name).
+SYSLOG_RE = re.compile(
+    r" (installd|installcoordinationd|appinstalld|mobile_installation_proxy|runningboardd|lsd|containermanagerd|SpringBoard"
+    r"|LoopSegments|SideStore)[\[(]|com\.loopsegments|MobileInstallation",
+    re.IGNORECASE)
+
+
+class InstallTrace:
+    """Timed lines in TRACE_PATH. Never raises: tracing must not break an install."""
+
+    def __init__(self, ipa: str):
+        self.t0 = time.monotonic()
+        self.last = "not started"
+        self.fh = None
+        try:
+            if os.path.getsize(TRACE_PATH) > TRACE_MAX_BYTES:
+                os.replace(TRACE_PATH, TRACE_PATH + ".1")
+        except OSError:
+            pass
+        try:
+            self.fh = open(TRACE_PATH, "a", encoding="utf-8")
+        except OSError:
+            pass
+        self.write("=" * 20 + f" install {os.path.basename(ipa)} ({os.path.getsize(ipa) / 1048576:.1f} MB)")
+
+    def elapsed(self) -> float:
+        return time.monotonic() - self.t0
+
+    def write(self, text: str) -> None:
+        if not self.fh:
+            return
+        try:
+            now = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+            self.fh.write(f"{now} +{self.elapsed():6.1f}s {text}\n")
+            self.fh.flush()
+        except OSError:
+            pass
+
+    def step(self, text: str) -> None:
+        self.last = f"{text} (at {self.elapsed():.0f} s)"
+        self.write("STEP " + text)
+
+    def close(self) -> None:
+        if self.fh:
+            try:
+                self.fh.close()
+            except OSError:
+                pass
+            self.fh = None
+
+
+async def capture_syslog(trace: InstallTrace) -> None:
+    """Copy the phone's install-related log lines into the trace until cancelled."""
+    from pymobiledevice3.lockdown import create_using_usbmux
+    from pymobiledevice3.services.syslog import SyslogService
+
+    lockdown = None
+    try:
+        lockdown = await create_using_usbmux()
+        async with SyslogService(lockdown) as syslog:
+            trace.write("phone log capture started")
+            async for line in syslog.watch():
+                if SYSLOG_RE.search(line):
+                    trace.write("PHONE " + line.strip())
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        trace.write(f"phone log capture stopped: {type(exc).__name__}: {exc}")
+    finally:
+        if lockdown is not None:
+            try:
+                await asyncio.wait_for(lockdown.close(), 5)
+            except BaseException:  # noqa: BLE001
+                pass
 
 
 def is_no_device(message: str) -> bool:
@@ -212,27 +294,77 @@ def add_sidestore_markers(ipa: str, bundle: str, work: str) -> str:
     return app
 
 
+async def install_steps(lockdown, ipa: str, trace: InstallTrace) -> None:
+    """installation_proxy's install_from_local, one step at a time so the trace shows where it stops:
+    the copy to the phone (AFC), then every answer of the phone's installer (Status, PercentComplete)."""
+    from pymobiledevice3.exceptions import AppInstallError
+    from pymobiledevice3.services.afc import AfcService
+    from pymobiledevice3.services.installation_proxy import TEMP_REMOTE_BASEDIR, InstallationProxyService
+
+    with open(ipa, "rb") as f:
+        data = f.read()
+    trace.step("connecting to the installer")
+    async with InstallationProxyService(lockdown=lockdown) as iproxy:
+        trace.step("connecting to the phone's file service")
+        async with AfcService(lockdown) as afc:
+            remote = f"{TEMP_REMOTE_BASEDIR}/{uuid.uuid4()}.ipa"
+            try:
+                trace.step(f"copying the IPA to the phone ({len(data) / 1048576:.1f} MB)")
+                await afc.makedirs(TEMP_REMOTE_BASEDIR)
+                await afc.set_file_contents(remote, data)
+                trace.step("copied; asked the installer to install, waiting for its first answer")
+                await iproxy.service.send_plist({"Command": "Install", "ClientOptions": {}, "PackagePath": remote})
+                while True:
+                    r = await iproxy.service.recv_plist()
+                    if not r:
+                        trace.step("the installer closed the connection")
+                        raise AppInstallError("the installer closed the connection without finishing")
+                    if r.get("Error"):
+                        trace.step(f"installer error: {r.get('Error')}: {r.get('ErrorDescription')}")
+                        raise AppInstallError(f"{r.get('Error')}: {r.get('ErrorDescription')}")
+                    status, pct = r.get("Status"), r.get("PercentComplete")
+                    trace.step("installer: " + (status or "?") + (f" {pct}%" if pct is not None else ""))
+                    if status == "Complete":
+                        return
+            finally:
+                try:
+                    await asyncio.wait_for(afc.rm_single(remote, force=True), 5)
+                except BaseException:  # noqa: BLE001
+                    pass
+
+
 async def install(ipa: str) -> str:
     from pymobiledevice3.lockdown import create_using_usbmux
-    from pymobiledevice3.services.installation_proxy import InstallationProxyService
 
+    trace = InstallTrace(ipa)
+    syslog_task = asyncio.create_task(capture_syslog(trace))
     try:
         lockdown = await create_using_usbmux()
         try:
-            async with InstallationProxyService(lockdown=lockdown) as iproxy:
-                # A stuck installd (seen once: it never answered until the phone was restarted)
-                # must not hang the deploy.
-                await asyncio.wait_for(iproxy.install_from_local(ipa, "Install"), INSTALL_TIMEOUT_S)
+            # A stuck installd (it never answered until the phone was restarted) must not hang the deploy.
+            await asyncio.wait_for(install_steps(lockdown, ipa, trace), INSTALL_TIMEOUT_S)
+            trace.step("installed")
         finally:
             try:
-                await lockdown.close()
-            except Exception:  # noqa: BLE001
+                await asyncio.wait_for(lockdown.close(), 5)
+            except BaseException:  # noqa: BLE001
                 pass
     except asyncio.TimeoutError:
+        trace.write(f"TIMEOUT after {INSTALL_TIMEOUT_S} s; last step: {trace.last}")
         return (f"INSTALL_FAILED\tthe phone's installer did not finish within {INSTALL_TIMEOUT_S} s "
-                "(restart the phone)")
+                f"(last step: {trace.last}; trace {TRACE_PATH}) (restart the phone)")
     except Exception as exc:  # noqa: BLE001
-        return f"INSTALL_FAILED\t{type(exc).__name__}: {exc}"
+        trace.write(f"FAILED {type(exc).__name__}: {exc}; last step: {trace.last}")
+        return f"INSTALL_FAILED\t{type(exc).__name__}: {exc} (trace {TRACE_PATH})"
+    finally:
+        # A few more seconds of the phone's log: what the installer did right after the result.
+        await asyncio.sleep(3)
+        syslog_task.cancel()
+        try:
+            await syslog_task
+        except BaseException:  # noqa: BLE001
+            pass
+        trace.close()
     return ""
 
 

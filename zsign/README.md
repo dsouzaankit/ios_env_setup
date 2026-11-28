@@ -80,3 +80,8 @@ If it keeps hanging, copy zsign to a local folder and point the app's config at 
 ## USB install times out
 
 If signing finishes (the `Signing on this PC…` line appears) but the install then times out or ends in `INSTALL_FAILED`, the phone's install service is usually stuck. Restart the iPhone, unlock it, keep it on USB, and run the install again.
+
+To find out why, read `%TEMP%\sidestore-sign-install-trace.log` (moved to `.1` past 8 MB). Every install adds a block: each `STEP` with its time since the start (connect, copy the IPA to the phone, then every answer of the phone's installer: `Status` and `PercentComplete`), and `PHONE` lines, the phone's own log from the services that install, start and stop apps (installd, runningboardd, lsd, containermanagerd, SpringBoard, the app itself) from the start until 3 s after the result. The `INSTALL_FAILED` line names the last step reached:
+- stuck at `copying the IPA to the phone`: the USB file copy hung, not the installer;
+- stuck at `waiting for its first answer`: the installer never took the job;
+- stuck at an `installer: <Status> <n>%` step: the installer stopped there; the `PHONE` lines just before the timeout say what it was waiting for (e.g. the running app to quit, or the phone to be unlocked).
